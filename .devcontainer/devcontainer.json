@@ -1,0 +1,45 @@
+{
+    "name": "ROS 2 Workspace",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "USERNAME": "ubuntu"
+        }
+    },
+    "workspaceFolder": "/home/ws",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/ws,type=bind",
+    
+    "runArgs": [
+        "--net=host",
+        "--ipc=host",
+        "--pid=host",
+        "--privileged"
+    ],
+    
+    "containerEnv": {
+        "DISPLAY": "${localEnv:DISPLAY}",
+        "WAYLAND_DISPLAY": "${localEnv:WAYLAND_DISPLAY}",
+        "XDG_RUNTIME_DIR": "${localEnv:XDG_RUNTIME_DIR}",
+        "PULSE_SERVER": "${localEnv:PULSE_SERVER}"
+    },
+    
+    "mounts": [
+        "source=/mnt/wslg,target=/mnt/wslg,type=bind",
+        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+        "source=/dev/dri,target=/dev/dri,type=bind"
+    ],
+    
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-python.python",
+                "ms-iot.vscode-ros"
+            ]
+        }
+    },
+    
+    "remoteUser": "ubuntu",
+    
+    "postCreateCommand": "sudo apt-get update && sudo rosdep init || true && rosdep update && rosdep install --from-paths src --ignore-src -y"
+}

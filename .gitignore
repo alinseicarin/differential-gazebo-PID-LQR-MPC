@@ -1,0 +1,7 @@
+# ROS 2 Build Artifacts
+build/
+install/
+log/
+
+# VS Code specific
+.vscode/
