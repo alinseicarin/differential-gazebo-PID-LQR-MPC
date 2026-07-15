@@ -32,6 +32,9 @@ find_package(nav_msgs REQUIRED)
 # 1. Tell CMake to compile your C++ file into an executable named 'pid_node'
 add_executable(pid_node src/pid_node.cpp)
 
+# Add this line so the compiler can find your .hpp file!
+target_include_directories(pid_node PUBLIC include)
+
 # 2. Link the ROS 2 libraries to your executable
 ament_target_dependencies(pid_node rclcpp geometry_msgs nav_msgs)
 

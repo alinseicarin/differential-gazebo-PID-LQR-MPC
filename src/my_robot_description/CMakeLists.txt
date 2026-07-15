@@ -26,9 +26,9 @@ endif()
 install(DIRECTORY
   urdf
   launch
-  DESTINATION share/${PROJECT_NAME}
-)
-install(DIRECTORY launch rviz worlds config
+  rviz
+  config
+  worlds
   DESTINATION share/${PROJECT_NAME}
 )
 ament_package()

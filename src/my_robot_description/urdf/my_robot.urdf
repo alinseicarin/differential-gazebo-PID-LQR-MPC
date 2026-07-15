@@ -33,31 +33,36 @@
     </joint>
 
     <link name="chassis">
-    <visual>
-      <geometry>
-        <box size="0.3 0.2 0.1"/>
-      </geometry>
-      <material name="blue">
-        <color rgba="0 0 1 1"/>
-      </material>
-    </visual>
+        <visual>
+            <geometry>
+                <box size="0.3 0.2 0.1"/>
+            </geometry>
+        <material name="blue">
+            <color rgba="0 0 1 1"/>
+        </material>
+        </visual>
 
-    <collision>
-      <geometry>
-        <box size="0.3 0.2 0.1"/>
-      </geometry>
-    </collision>
+        <collision>
+            <geometry>
+                <box size="0.3 0.2 0.1"/>
+            </geometry>
+        </collision>
 
-    <inertial>
-      <mass value="1.0"/>
-      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
-    </inertial>
-  </link>
+        <inertial>
+            <origin xyz="0.05 0 0" rpy="0 0 0"/>
+            <mass value="3.0"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+        </inertial>
+    </link>
 
     <joint name="left_wheel_joint" type="continuous">
+        <limit effort="2.5" velocity="10.0"/>
+        <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="left_wheel"/>
-        <origin xyz="0 0.175 0" rpy="-1.5708 0 0"/> <axis xyz="0 0 1"/> </joint>
+        <origin xyz="0 0.175 0" rpy="-1.5708 0 0"/> 
+        <axis xyz="0 0 1"/>
+    </joint>
 
     <link name="left_wheel">
         <visual>
@@ -78,6 +83,8 @@
     </link>
 
     <joint name="right_wheel_joint" type="continuous">
+        <limit effort="2.5" velocity="10.0"/>
+        <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="right_wheel"/>
         <origin xyz="0 -0.175 0" rpy="1.5708 0 0"/> 
@@ -183,6 +190,12 @@
             <covariance_x>0.001</covariance_x> <covariance_y>0.001</covariance_y> <covariance_yaw>0.01</covariance_yaw> 
       
         </plugin>
+    </gazebo>
+    
+    <gazebo reference="caster_wheel">
+        <mu1>0.0</mu1>
+        <mu2>0.0</mu2>
+        <material>Gazebo/FlatBlack</material>
     </gazebo>
   
 </robot>

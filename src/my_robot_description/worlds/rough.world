@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="rough_world">
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <model name="bump_1">
+      <static>true</static>
+      <pose>2 0 0.05 0.1 0 0</pose>
+      <link name="link"><visual name="visual"><geometry><box><size>1 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>1 4 0.1</size></box></geometry></collision></link>
+    </model>
+
+    <model name="bump_2">
+      <static>true</static>
+      <pose>3 0 0.05 -0.15 0 0</pose>
+      <link name="link"><visual name="visual"><geometry><box><size>1 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>1 4 0.1</size></box></geometry></collision></link>
+    </model>
+
+    <model name="bump_3">
+      <static>true</static>
+      <pose>4.5 0 0.08 0 0.05 0</pose>
+      <link name="link"><visual name="visual"><geometry><box><size>2 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>2 4 0.1</size></box></geometry></collision></link>
+    </model>
+
+    <model name="bump_4">
+      <static>true</static>
+      <pose>6.5 0 0.04 0.1 0 0.5</pose>
+      <link name="link"><visual name="visual"><geometry><box><size>1.5 5 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>1.5 5 0.1</size></box></geometry></collision></link>
+    </model>
+  </world>
+</sdf>
