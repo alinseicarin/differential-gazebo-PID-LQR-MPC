@@ -1,18 +1,38 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
+  <!-- Asset package containing the robot model, simulation, EKF, and RViz. -->
   <name>my_robot_description</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
   <maintainer email="alinsei@yahoo.com">ubuntu</maintainer>
+  <!-- Replace this placeholder after selecting the thesis project's license. -->
   <license>TODO: License declaration</license>
 
+  <!-- CMake installs and exports the package's non-code resources. -->
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- Runtime-only tools instantiated by display.launch.py or the URDF. -->
+  <exec_depend>ament_index_python</exec_depend>
+  <!-- Provides model plugins such as differential drive, IMU, and joint state. -->
+  <exec_depend>gazebo_plugins</exec_depend>
+  <!-- Provides ROS/Gazebo initialization and entity-spawning integration. -->
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- Fuses /odom and /demo/imu into /odometry/filtered. -->
+  <exec_depend>robot_localization</exec_depend>
+  <!-- Converts URDF joint states into the robot's TF link tree. -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <!-- Displays the robot and TF tree but does not affect simulation physics. -->
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- Automatically discovered style and metadata checks for `colcon test`. -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
+    <!-- Declare this as a conventional CMake-based ROS 2 package. -->
     <build_type>ament_cmake</build_type>
   </export>
 </package>

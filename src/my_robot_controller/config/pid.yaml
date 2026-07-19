@@ -1,0 +1,43 @@
+# Compatibility copy of the original baseline configuration. pid.launch.py now
+# defaults to pid_baseline.yaml so named experiment profiles are unambiguous.
+# Keep this file synchronized only for older commands that still reference it.
+pid_node:
+  ros__parameters:
+    # Follow Gazebo's /clock rather than host wall time.
+    use_sim_time: true
+
+    # Linear PID: distance-to-lookahead error [m] -> forward speed [m/s].
+    # The integral state is clamped to +/- linear_integral_limit.
+    linear_kp: 1.0
+    linear_ki: 0.1
+    linear_kd: 0.2
+    linear_integral_limit: 1.0
+
+    # Angular PID: target bearing error [rad] -> yaw rate [rad/s].
+    # Ki is initially zero, so the angular integral limit is currently inactive.
+    angular_kp: 1.5
+    angular_ki: 0.0
+    angular_kd: 0.3
+    angular_integral_limit: 1.0
+
+    # Number of CSV points beyond the closest point used as the steering target.
+    lookahead_points: 5
+
+    # Maximum forward search span for updating monotonic path progress.
+    search_window: 20
+
+    # Used as fallback dt for the first sample or after a long odometry gap.
+    nominal_control_frequency: 30.0
+
+    # Gaps above this simulated duration reset both PID memory states.
+    max_control_dt: 0.2
+
+    # Stop once final-path progress is reached and endpoint error is below 8 cm.
+    goal_tolerance: 0.08
+
+    # Symmetric angular bound and forward-only linear actuator bound.
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+
+    # Wall-clock safety timeout. Longer than typical slow-Gazebo update gaps.
+    odom_timeout: 2.0

@@ -1,3 +1,6 @@
+# RViz session for inspecting the robot model and TF tree during simulation.
+# This file controls visualization only and has no effect on Gazebo physics,
+# localization, or controller commands. RViz may rewrite comments when saving.
 Panels:
   - Class: rviz_common/Displays
     Help Height: 78
@@ -156,7 +159,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_footprint
+    Fixed Frame: odom
     Frame Rate: 30
   Name: root
   Tools:

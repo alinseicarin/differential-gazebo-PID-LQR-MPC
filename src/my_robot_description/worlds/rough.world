@@ -1,5 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
+  <!-- Robustness world with deterministic bumps along the positive X direction. -->
   <world name="rough_world">
     <include>
       <uri>model://sun</uri>
@@ -8,24 +9,29 @@
       <uri>model://ground_plane</uri>
     </include>
 
+    <!-- Each obstacle is a static collision box. Small roll/pitch/yaw offsets
+         produce repeatable chassis disturbances without random terrain. -->
     <model name="bump_1">
       <static>true</static>
       <pose>2 0 0.05 0.1 0 0</pose>
       <link name="link"><visual name="visual"><geometry><box><size>1 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>1 4 0.1</size></box></geometry></collision></link>
     </model>
 
+    <!-- Opposite roll angle tests recovery after the first lateral disturbance. -->
     <model name="bump_2">
       <static>true</static>
       <pose>3 0 0.05 -0.15 0 0</pose>
       <link name="link"><visual name="visual"><geometry><box><size>1 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>1 4 0.1</size></box></geometry></collision></link>
     </model>
 
+    <!-- Longer, slightly pitched platform creates a sustained uneven section. -->
     <model name="bump_3">
       <static>true</static>
       <pose>4.5 0 0.08 0 0.05 0</pose>
       <link name="link"><visual name="visual"><geometry><box><size>2 4 0.1</size></box></geometry></visual><collision name="collision"><geometry><box><size>2 4 0.1</size></box></geometry></collision></link>
     </model>
 
+    <!-- Final rotated bump excites combined roll/yaw effects later in the path. -->
     <model name="bump_4">
       <static>true</static>
       <pose>6.5 0 0.04 0.1 0 0.5</pose>

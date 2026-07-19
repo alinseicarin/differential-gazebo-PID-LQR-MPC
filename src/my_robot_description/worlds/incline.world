@@ -1,5 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
+  <!-- Robustness world for evaluating tracking under a sustained 15-degree slope. -->
   <world name="incline_world">
     <include>
       <uri>model://sun</uri>
@@ -8,6 +9,8 @@
       <uri>model://ground_plane</uri>
     </include>
 
+    <!-- A large static box is pitched by -0.2617 rad (approximately -15 deg).
+         Its dimensions place the top surface across the robot's forward path. -->
     <model name="test_ramp">
       <static>true</static>
       <pose>10 0 -2.0 0 -0.2617 0</pose>
@@ -18,6 +21,8 @@
               <size>30 10 5</size>
             </box>
           </geometry>
+          <!-- Higher friction prevents the ramp test from becoming a pure
+               wheel-slip test; low-friction behavior should use a separate map. -->
           <surface>
             <friction>
               <ode>
@@ -33,6 +38,7 @@
               <size>30 10 5</size>
             </box>
           </geometry>
+          <!-- Visual material affects rendering only, not contact physics. -->
           <material>
             <script>
               <name>Gazebo/Grey</name>

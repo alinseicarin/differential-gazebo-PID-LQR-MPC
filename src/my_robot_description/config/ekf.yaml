@@ -1,34 +1,57 @@
+# robot_localization EKF configuration for planar differential-drive motion.
+#
+# Sensor configuration arrays always use this 15-state order:
+# [x, y, z, roll, pitch, yaw,
+#  vx, vy, vz, vroll, vpitch, vyaw,
+#  ax, ay, az]
+# A true entry fuses that variable from the corresponding sensor message.
 ekf_filter_node:
   ros__parameters:
+    # Match the controller and Gazebo plugin update frequency in simulation time.
     frequency: 30.0
+    # Stop predicting indefinitely if all configured sensor inputs become stale.
+    sensor_timeout: 0.2
+    # Constrain z, roll, pitch, and their derivatives for ground-plane motion.
     two_d_mode: true
+    # The EKF, rather than Gazebo, owns the odom -> base_footprint transform.
     publish_tf: true
+    # Permit clean recovery when Gazebo resets /clock backwards.
+    reset_on_time_jump: true
 
+    # world_frame=odom selects locally continuous odometry without a global map
+    # correction source. map_frame is declared for robot_localization's frame
+    # model but is not published by this local EKF configuration.
     map_frame: map
     odom_frame: odom
     base_link_frame: base_footprint
     world_frame: odom
 
-    # -------------------------------------
-    # Sensor 1: Wheel Odometry
-    # -------------------------------------
+    # -----------------------------------------------------------------------
+    # Sensor 1: Gazebo differential-drive wheel odometry
+    # -----------------------------------------------------------------------
     odom0: /odom
+    # Fuse planar pose (x, y, yaw), body velocity (vx, vy), and yaw rate. Fusing
+    # the measured vy=0 also encodes the nonholonomic no-sideways-motion model.
     odom0_config: [true,  true,  false,
                    false, false, true,
                    true,  true,  false,
                    false, false, true,
                    false, false, false]
+    # Gazebo already reports pose in the odom frame, so use it as absolute pose.
     odom0_differential: false
 
-    # -------------------------------------
-    # Sensor 2: The IMU
-    # -------------------------------------
+    # -----------------------------------------------------------------------
+    # Sensor 2: simulated chassis IMU
+    # -----------------------------------------------------------------------
     imu0: /demo/imu
-    # We only care about the IMU's rotation (yaw) and rotational velocity
+    # Fuse absolute yaw, yaw angular velocity, and longitudinal acceleration.
+    # Roll/pitch are intentionally ignored because two_d_mode constrains them.
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,
                   false, false, true,
                   true,  false, false]
+    # The Gazebo IMU orientation is absolute, not an incremental measurement.
     imu0_differential: false
+    # Remove the gravity vector before fusing linear acceleration.
     imu0_remove_gravitational_acceleration: true

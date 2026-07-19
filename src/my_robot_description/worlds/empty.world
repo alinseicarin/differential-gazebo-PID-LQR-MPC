@@ -1,9 +1,12 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
+  <!-- Nominal benchmark world: lighting and an infinite flat ground plane only. -->
   <world name="default_empty_world">
+    <!-- Directional light used by the Gazebo client renderer. -->
     <include>
       <uri>model://sun</uri>
     </include>
+    <!-- Standard static plane at z=0; all nominal paths lie on this surface. -->
     <include>
       <uri>model://ground_plane</uri>
     </include>

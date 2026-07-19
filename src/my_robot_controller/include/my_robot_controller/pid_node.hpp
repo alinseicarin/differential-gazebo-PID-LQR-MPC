@@ -1,94 +1,135 @@
 #ifndef PID_NODE_HPP
 #define PID_NODE_HPP
 
-#include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "rclcpp/rclcpp.hpp"
 
-// NEW: C++ Standard Libraries for files and arrays
+#include <chrono>
+#include <cstddef>
 #include <fstream>
-#include <sstream>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
-class PIDController {
-private:
-    double kp_, ki_, kd_;
-    double max_i_; // NEW: The absolute limit for the integral memory
-    double integral_;
-    double prev_error_;
-
+/// Generic single-input, single-output PID controller.
+///
+/// The controller evaluates
+///   u = Kp * e + Ki * integral(e dt) + Kd * de/dt
+/// and limits the stored integral state to avoid integral windup. It is used
+/// twice by PidNode: once for distance/linear velocity and once for
+/// heading/angular velocity.
+class PIDController
+{
 public:
-    // NEW: Constructor now takes a 4th parameter (max_i)
-    PIDController(double kp, double ki, double kd, double max_i) 
-        : kp_(kp), ki_(ki), kd_(kd), max_i_(max_i), integral_(0.0), prev_error_(0.0) {}
+  PIDController(double kp, double ki, double kd, double max_i)
+  : kp_(kp), ki_(ki), kd_(kd), max_i_(max_i) {}
 
-    // The math engine (runs at 30Hz)
-    double calculate(double error, double dt) {
-        // 1. Proportional
-        double p_out = kp_ * error;
+  /// Replace all gains and clear the controller's accumulated state.
+  void configure(double kp, double ki, double kd, double max_i);
 
-        // 2. Integral (Accumulates over time)
-        integral_ += error * dt;
+  /// Calculate one control output from the current error and elapsed time.
+  double calculate(double error, double dt);
 
-        // --- NEW: ANTI-WINDUP CLAMP ---
-        // Prevents the memory from exploding if the robot gets physically stuck
-        if (integral_ > max_i_) {
-            integral_ = max_i_;
-        } else if (integral_ < -max_i_) {
-            integral_ = -max_i_;
-        }
-        
-        double i_out = ki_ * integral_;
+  /// Clear integral and derivative memory after discontinuities or timeouts.
+  void reset();
 
-        // 3. Derivative (Rate of change)
-        double derivative = (error - prev_error_) / dt;
-        double d_out = kd_ * derivative;
+private:
+  // Controller gains and the absolute integral-state limit.
+  double kp_;
+  double ki_;
+  double kd_;
+  double max_i_;
 
-        // Save current error for the next loop
-        prev_error_ = error;
+  // State retained between consecutive controller updates.
+  double integral_{0.0};
+  double prev_error_{0.0};
 
-        // Total Output
-        return p_out + i_out + d_out;
-    }
-
-    // Reset memory (useful when switching to a new waypoint)
-    void reset() {
-        integral_ = 0.0;
-        prev_error_ = 0.0;
-    }
+  // Suppresses derivative kick on the first calculation after a reset.
+  bool has_previous_error_{false};
 };
 
-// 2. Your Actual ROS 2 Node "Menu"
-class PidNode : public rclcpp::Node { // ii dam clasei PidNode inheritance de la clasa Node standard ros2 (deci e capabila de networking cu publisheri subscriberi si timere)
+/// ROS 2 node that follows an x,y waypoint path with two PID controllers.
+///
+/// Data flow:
+///   /odometry/filtered -> PidNode -> /cmd_vel
+///
+/// Each filtered odometry message triggers one control update. This keeps the
+/// control loop synchronized with Gazebo simulation time instead of host wall
+/// time. A separate wall-clock watchdog only handles loss of odometry.
+class PidNode : public rclcpp::Node
+{
 public:
-    PidNode(); // The Constructor promise
-    ~PidNode();
+  PidNode();
+  ~PidNode() override;
+
+  /// Publish a zero Twist command. Exposed so main() can request a final stop.
+  void stop();
+
 private:
-    std::ofstream trajectory_csv_;
-    void control_loop(); // The Math Loop promise
-    void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
+  /// Read and validate a headerless two-column x,y waypoint CSV.
+  void load_waypoints(const std::string & file_path);
 
-    // NEW: A function to read the CSV
-    void load_waypoints(const std::string& file_path);
+  /// Store the latest pose, derive dt from its timestamp, and run control.
+  void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
 
-    // NEW: Memory storage for the trajectory
-    // A vector (list) of X, Y pairs
-    std::vector<std::pair<double, double>> waypoints_;
-    size_t current_wp_index_; // Which waypoint are we currently targeting?
-    
-    // Create the two PID objects
-    PIDController linear_pid_;
-    PIDController angular_pid_;
-    
-    // ROS 2 plumbing, data pipes
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_publisher_;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
-    rclcpp::TimerBase::SharedPtr timer_;
+  /// Select path references, calculate PID commands, publish, and log them.
+  void control_loop(double stamp_seconds, double dt);
 
-    // Variables to hold current robot state
-    double current_x_, current_y_, current_theta_;
+  /// Stop the robot if filtered odometry disappears for too long.
+  void watchdog_callback();
+
+  /// Publish an all-zero geometry_msgs/Twist and remember that it was sent.
+  void publish_stop();
+
+  /// Write one MATLAB-friendly experiment row with a consistent column order.
+  void log_sample(
+    double stamp_seconds, double reference_x, double reference_y, double reference_yaw,
+    double cross_track_error, double path_heading_error, double target_heading_error,
+    double linear_command, double angular_command);
+
+  // Experiment input/output. Waypoints are stored as ordered x,y pairs.
+  std::ofstream trajectory_csv_;
+  std::vector<std::pair<double, double>> waypoints_;
+
+  // Path progress is monotonic: the closest-point search never moves backward.
+  std::size_t current_wp_index_{0};
+
+  // Independent controllers for translational and rotational commands.
+  PIDController linear_pid_{1.0, 0.1, 0.2, 1.0};
+  PIDController angular_pid_{1.5, 0.0, 0.3, 1.0};
+
+  // ROS communication objects. The watchdog timer is not the control timer.
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_publisher_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
+  rclcpp::TimerBase::SharedPtr watchdog_timer_;
+
+  // Latest planar state estimated by robot_localization's EKF.
+  double current_x_{0.0};
+  double current_y_{0.0};
+  double current_theta_{0.0};
+
+  // ROS timestamps used for measured dt and experiment-relative time.
+  double previous_stamp_seconds_{0.0};
+  double first_stamp_seconds_{0.0};
+
+  // Path search and controller safety parameters loaded from ROS parameters.
+  std::size_t lookahead_points_{5};
+  std::size_t search_window_{20};
+
+  // nominal_dt_ is a safe fallback after the first sample or a large data gap.
+  double nominal_dt_{1.0 / 30.0};
+  double max_control_dt_{0.2};
+  double goal_tolerance_{0.08};
+  double max_linear_velocity_{1.0};
+  double max_angular_velocity_{1.5};
+  double odom_timeout_{2.0};
+
+  // Lifecycle/safety flags and the wall-clock time of the latest odometry.
+  bool odom_received_{false};
+  bool track_complete_{false};
+  bool stop_sent_{false};
+  std::chrono::steady_clock::time_point last_odom_wall_time_;
 };
 
 #endif
