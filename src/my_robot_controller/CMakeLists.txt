@@ -14,6 +14,7 @@ endif()
 # selected and added consistently.
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
@@ -24,17 +25,88 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 
-# Build the controller as a ROS 2 executable. C++17 is required for std::clamp.
+# Build controller-independent path geometry as a reusable library. Future PID,
+# LQR, and MPC executables must share this exact reference interpretation.
+add_library(path_reference_manager src/path_reference_manager.cpp)
+target_include_directories(path_reference_manager PUBLIC include)
+target_compile_features(path_reference_manager PUBLIC cxx_std_17)
+
+# The generic PID implementation is shared by the preliminary lookahead loops
+# and the thesis cascade, preventing small mathematical differences between
+# controller modes.
+add_library(pid_controller src/pid_controller.cpp)
+target_include_directories(pid_controller PUBLIC include)
+target_compile_features(pid_controller PUBLIC cxx_std_17)
+
+# Keep the cascade free of ROS interfaces so its signs, feedforward, immediate
+# heading response, and limits can be tested without launching Gazebo.
+add_library(cascaded_pid_controller src/cascaded_pid_controller.cpp)
+target_include_directories(cascaded_pid_controller PUBLIC include)
+target_compile_features(cascaded_pid_controller PUBLIC cxx_std_17)
+target_link_libraries(
+  cascaded_pid_controller PUBLIC pid_controller path_reference_manager)
+
+# The downstream command fault is controller-independent. It can therefore be
+# reused unchanged when PID is replaced by LQR or MPC.
+add_library(command_disturbance src/command_disturbance.cpp)
+target_include_directories(command_disturbance PUBLIC include)
+target_compile_features(command_disturbance PUBLIC cxx_std_17)
+
+# Build the selectable PID executable against the reusable control components.
 add_executable(pid_node src/pid_node.cpp)
 target_include_directories(pid_node PUBLIC include)
 target_compile_features(pid_node PUBLIC cxx_std_17)
+target_link_libraries(
+  pid_node path_reference_manager pid_controller cascaded_pid_controller)
 ament_target_dependencies(pid_node rclcpp geometry_msgs nav_msgs)
+
+# ROS adapter that converts /cmd_vel_nominal into the actual /cmd_vel while
+# applying and logging one simulation-time command fault.
+add_executable(
+  command_disturbance_injector src/command_disturbance_injector_node.cpp)
+target_include_directories(command_disturbance_injector PUBLIC include)
+target_compile_features(command_disturbance_injector PUBLIC cxx_std_17)
+target_link_libraries(command_disturbance_injector command_disturbance)
+ament_target_dependencies(command_disturbance_injector rclcpp geometry_msgs)
+
+if(BUILD_TESTING)
+  # Geometry tests run without ROS or Gazebo and protect the common definitions
+  # used in every later controller comparison.
+  ament_add_gtest(test_path_reference_manager test/test_path_reference_manager.cpp)
+  target_link_libraries(test_path_reference_manager path_reference_manager)
+  target_include_directories(test_path_reference_manager PUBLIC include)
+  target_compile_features(test_path_reference_manager PUBLIC cxx_std_17)
+
+  # These tests directly verify the cascaded control law, including the case
+  # where a robot is rotated while still geometrically on the path.
+  ament_add_gtest(test_cascaded_pid_controller test/test_cascaded_pid_controller.cpp)
+  target_link_libraries(test_cascaded_pid_controller cascaded_pid_controller)
+  target_include_directories(test_cascaded_pid_controller PUBLIC include)
+  target_compile_features(test_cascaded_pid_controller PUBLIC cxx_std_17)
+
+  # Boundary, bias, and saturation tests freeze the exact fault supplied to all
+  # controller families in the final comparison.
+  ament_add_gtest(test_command_disturbance test/test_command_disturbance.cpp)
+  target_link_libraries(test_command_disturbance command_disturbance)
+  target_include_directories(test_command_disturbance PUBLIC include)
+  target_compile_features(test_command_disturbance PUBLIC cxx_std_17)
+endif()
 
 # ROS 2 discovers executables installed under lib/<package-name>.
 install(TARGETS
   pid_node
-  DESTINATION lib/${PROJECT_NAME}
+  command_disturbance_injector
+  path_reference_manager
+  pid_controller
+  cascaded_pid_controller
+  command_disturbance
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
+
+# Install the common geometry API for the later LQR and MPC executables.
+install(DIRECTORY include/ DESTINATION include)
 
 # Install runtime configuration and launch descriptions into the package share.
 install(DIRECTORY
@@ -51,8 +123,16 @@ install(FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/../../track_3_corner.csv
   ${CMAKE_CURRENT_SOURCE_DIR}/../../track_4_circle.csv
   ${CMAKE_CURRENT_SOURCE_DIR}/../../track_5_figure_eight.csv
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../track_6_initial_lateral_offset.csv
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../track_7_initial_heading_offset.csv
   DESTINATION share/${PROJECT_NAME}/tracks
 )
 
 # Generate and export the package metadata consumed by colcon and ros2 tools.
+ament_export_include_directories(include)
+ament_export_libraries(
+  path_reference_manager
+  pid_controller
+  cascaded_pid_controller
+  command_disturbance)
 ament_package()

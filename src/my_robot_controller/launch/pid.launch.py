@@ -44,7 +44,7 @@ def generate_launch_description():
             default_value=PathJoinSubstitution([
                 package_share, 'config', 'pid_baseline.yaml'
             ]),
-            description='PID profile YAML (baseline, fast, robust, or custom)',
+            description='PID profile YAML (baseline, fast, robust, cascade, or custom)',
         ),
         # Gazebo experiments should use /clock. Setting this false also permits
         # focused tests driven by odometry with ordinary wall-clock timestamps.

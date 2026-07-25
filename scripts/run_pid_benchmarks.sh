@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the baseline, fast, and robust PID profiles on five nominal paths.
+# Run named PID profiles on five nominal paths.
 #
 # Usage from inside the development container:
 #   bash scripts/run_pid_benchmarks.sh [result_directory]
@@ -9,6 +9,10 @@
 #   PID_BENCHMARK_PROFILES="baseline" \
 #   PID_BENCHMARK_TRACKS="circle figure_eight" \
 #     bash scripts/run_pid_benchmarks.sh /tmp/pid_closed_paths
+#
+# The cascaded controller is selected with:
+#   PID_BENCHMARK_PROFILES="cascade" \
+#     bash scripts/run_pid_benchmarks.sh /tmp/pid_cascade
 #
 # The script launches a fresh headless Gazebo instance for every trial so robot
 # state, EKF state, and simulation time cannot leak between configurations.
@@ -34,10 +38,20 @@ head -n 101 \
   /home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_1_straight.csv \
   > "${STRAIGHT_TRACK}"
 
+# The ramp in incline.world emerges from the ground near x=7.8 m. A separate
+# 15 m reference ensures that the robot enters and climbs a meaningful length
+# of the slope; the ordinary 5 m straight remains the nominal flat benchmark.
+INCLINE_STRAIGHT_TRACK="${RESULT_DIR}/track_straight_15m.csv"
+head -n 301 \
+  /home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_1_straight.csv \
+  > "${INCLINE_STRAIGHT_TRACK}"
+
 CURVE_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_2_curve.csv"
 CORNER_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_3_corner.csv"
 CIRCLE_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_4_circle.csv"
 FIGURE_EIGHT_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_5_figure_eight.csv"
+INITIAL_LATERAL_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_6_initial_lateral_offset.csv"
+INITIAL_HEADING_TRACK="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_7_initial_heading_offset.csv"
 SUMMARY="${RESULT_DIR}/summary.csv"
 ACTIVE_SIMULATION_PID=""
 ACTIVE_CONTROLLER_PID=""
@@ -233,6 +247,9 @@ for profile in "${profiles[@]}"; do
       corner) run_trial "${profile}" corner "${CORNER_TRACK}" ;;
       circle) run_trial "${profile}" circle "${CIRCLE_TRACK}" ;;
       figure_eight) run_trial "${profile}" figure_eight "${FIGURE_EIGHT_TRACK}" ;;
+      initial_lateral) run_trial "${profile}" initial_lateral "${INITIAL_LATERAL_TRACK}" ;;
+      initial_heading) run_trial "${profile}" initial_heading "${INITIAL_HEADING_TRACK}" ;;
+      incline_straight) run_trial "${profile}" incline_straight "${INCLINE_STRAIGHT_TRACK}" incline.world ;;
       *)
         echo "Unknown track selector: ${track}" >&2
         exit 2

@@ -1,0 +1,44 @@
+# Main PID architecture proposed for the PID/LQR/MPC thesis comparison.
+#
+# The outer loop converts signed cross-track error [m] into a limited heading
+# correction [rad]. The inner loop converts the resulting heading error [rad]
+# into angular-velocity feedback [rad/s]. Curvature yaw rate is supplied as
+# feedforward by the common path-reference manager.
+pid_node:
+  ros__parameters:
+    use_sim_time: true
+    controller_mode: cascade
+
+    # Outer lateral-position loop. Positive cross-track error means that the
+    # robot is left of the oriented path; the implementation applies the
+    # negative of this PID output so the desired heading points back right.
+    cascade_cross_track_kp: 1.5
+    cascade_cross_track_ki: 0.0
+    cascade_cross_track_kd: 0.20
+    cascade_cross_track_integral_limit: 0.5
+
+    # Inner heading loop. Curvature feedforward is added after this feedback.
+    cascade_heading_kp: 3.0
+    cascade_heading_ki: 0.0
+    cascade_heading_kd: 0.20
+    cascade_heading_integral_limit: 0.5
+
+    # Prevent the outer loop from asking for more than about 40 degrees of
+    # heading correction. Slow forward motion as lateral displacement grows.
+    cascade_max_heading_correction: 0.7
+    cascade_cross_track_speed_gain: 1.5
+
+    # Common reference-speed policy shared with future LQR and MPC controllers.
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
+
+    # Timing, terminal condition, actuator limits, and watchdog safety.
+    nominal_control_frequency: 30.0
+    max_control_dt: 0.2
+    goal_tolerance: 0.08
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+    odom_timeout: 2.0

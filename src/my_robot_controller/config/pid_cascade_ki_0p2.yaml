@@ -1,0 +1,27 @@
+# Inner-integral commissioning candidate. All parameters except heading Ki are
+# identical to the selected cascaded PID profile.
+pid_node:
+  ros__parameters:
+    use_sim_time: true
+    controller_mode: cascade
+    cascade_cross_track_kp: 1.5
+    cascade_cross_track_ki: 0.0
+    cascade_cross_track_kd: 0.20
+    cascade_cross_track_integral_limit: 0.5
+    cascade_heading_kp: 3.0
+    cascade_heading_ki: 0.2
+    cascade_heading_kd: 0.20
+    cascade_heading_integral_limit: 0.5
+    cascade_max_heading_correction: 0.7
+    cascade_cross_track_speed_gain: 1.5
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
+    nominal_control_frequency: 30.0
+    max_control_dt: 0.2
+    goal_tolerance: 0.08
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+    odom_timeout: 2.0

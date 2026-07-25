@@ -1,154 +1,9 @@
 #include "my_robot_controller/pid_node.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <iomanip>
-#include <limits>
-#include <sstream>
 #include <stdexcept>
-
-namespace
-{
-// Use a local constant instead of the non-standard M_PI macro so this source
-// behaves consistently across compilers.
-constexpr double kPi = 3.14159265358979323846;
-
-// Convert an arbitrary angular difference to the shortest signed rotation.
-// Without wrapping, crossing from +pi to -pi would look like a nearly 2*pi
-// error and could make the robot turn the long way around.
-double wrap_angle(double angle)
-{
-  while (angle > kPi) {
-    angle -= 2.0 * kPi;
-  }
-  while (angle < -kPi) {
-    angle += 2.0 * kPi;
-  }
-  return angle;
-}
-
-// Parse one CSV field and reject malformed, trailing, NaN, or infinite data.
-// Failing during startup is safer than commanding the robot from a partially
-// loaded path. The line number is included to make track files easy to debug.
-double parse_finite_double(const std::string & value, std::size_t line_number)
-{
-  std::size_t consumed = 0;
-  double parsed = 0.0;
-
-  try {
-    parsed = std::stod(value, &consumed);
-  } catch (const std::exception &) {
-    throw std::runtime_error(
-            "Invalid number in waypoint CSV at line " + std::to_string(line_number));
-  }
-
-  while (consumed < value.size() &&
-    std::isspace(static_cast<unsigned char>(value[consumed])))
-  {
-    ++consumed;
-  }
-
-  if (consumed != value.size() || !std::isfinite(parsed)) {
-    throw std::runtime_error(
-            "Invalid number in waypoint CSV at line " + std::to_string(line_number));
-  }
-
-  return parsed;
-}
-}  // namespace
-
-void PIDController::configure(double kp, double ki, double kd, double max_i)
-{
-  kp_ = kp;
-  ki_ = ki;
-  kd_ = kd;
-  // Treat a negative limit as its magnitude so clamp bounds remain ordered.
-  max_i_ = std::abs(max_i);
-  reset();
-}
-
-double PIDController::calculate(double error, double dt)
-{
-  // Invalid data must never be propagated into a velocity command.
-  if (!std::isfinite(error) || !std::isfinite(dt) || dt <= 0.0) {
-    return 0.0;
-  }
-
-  // Integral term with anti-windup. This bounds the stored state, not merely
-  // the final output, so a temporarily stuck robot can recover promptly.
-  integral_ = std::clamp(integral_ + error * dt, -max_i_, max_i_);
-
-  // On the first update after reset there is no previous measurement. Using
-  // zero derivative avoids a large artificial derivative kick.
-  double derivative = 0.0;
-  if (has_previous_error_) {
-    derivative = (error - prev_error_) / dt;
-  }
-
-  prev_error_ = error;
-  has_previous_error_ = true;
-
-  return kp_ * error + ki_ * integral_ + kd_ * derivative;
-}
-
-void PIDController::reset()
-{
-  // A reset is used after discontinuous timing and during sharp turns, where
-  // old accumulated error is no longer representative of the current motion.
-  integral_ = 0.0;
-  prev_error_ = 0.0;
-  has_previous_error_ = false;
-}
-
-void PidNode::load_waypoints(const std::string & file_path)
-{
-  // csv_path is deliberately required. Silently choosing a missing or stale
-  // benchmark would invalidate comparisons between different controllers.
-  if (file_path.empty()) {
-    throw std::runtime_error("Parameter 'csv_path' must not be empty");
-  }
-
-  std::ifstream file(file_path);
-  if (!file.is_open()) {
-    throw std::runtime_error("Could not open waypoint CSV: " + file_path);
-  }
-
-  std::string line;
-  std::size_t line_number = 0;
-  while (std::getline(file, line)) {
-    ++line_number;
-    if (line.empty()) {
-      continue;
-    }
-
-    // Benchmark tracks are headerless and must contain exactly "x,y". Extra
-    // columns are rejected so a trajectory CSV cannot be used accidentally.
-    std::stringstream stream(line);
-    std::string x_value;
-    std::string y_value;
-    std::string extra_value;
-    if (!std::getline(stream, x_value, ',') ||
-      !std::getline(stream, y_value, ',') ||
-      std::getline(stream, extra_value, ','))
-    {
-      throw std::runtime_error(
-              "Expected exactly two columns in waypoint CSV at line " +
-              std::to_string(line_number));
-    }
-
-    waypoints_.emplace_back(
-      parse_finite_double(x_value, line_number),
-      parse_finite_double(y_value, line_number));
-  }
-
-  if (waypoints_.size() < 2) {
-    throw std::runtime_error("Waypoint CSV must contain at least two valid points");
-  }
-
-  RCLCPP_INFO(
-    get_logger(), "Loaded %zu waypoints from %s", waypoints_.size(), file_path.c_str());
-}
 
 PidNode::PidNode()
 : Node("pid_node")
@@ -161,6 +16,7 @@ PidNode::PidNode()
   // recompiling or depending on the container's directory layout.
   declare_parameter<std::string>("csv_path", "");
   declare_parameter<std::string>("output_csv_path", "robot_actual_trajectory.csv");
+  declare_parameter<std::string>("controller_mode", "lookahead");
 
   // -----------------------------------------------------------------------
   // PID gains
@@ -177,6 +33,22 @@ PidNode::PidNode()
   declare_parameter<double>("angular_integral_limit", 1.0);
 
   // -----------------------------------------------------------------------
+  // Cascaded PID gains
+  // -----------------------------------------------------------------------
+  // The outer loop maps signed cross-track error to a heading correction. The
+  // inner loop maps corrected heading error to angular-velocity feedback.
+  declare_parameter<double>("cascade_cross_track_kp", 1.2);
+  declare_parameter<double>("cascade_cross_track_ki", 0.0);
+  declare_parameter<double>("cascade_cross_track_kd", 0.15);
+  declare_parameter<double>("cascade_cross_track_integral_limit", 0.5);
+  declare_parameter<double>("cascade_heading_kp", 2.5);
+  declare_parameter<double>("cascade_heading_ki", 0.0);
+  declare_parameter<double>("cascade_heading_kd", 0.15);
+  declare_parameter<double>("cascade_heading_integral_limit", 0.5);
+  declare_parameter<double>("cascade_max_heading_correction", 0.7);
+  declare_parameter<double>("cascade_cross_track_speed_gain", 1.5);
+
+  // -----------------------------------------------------------------------
   // Path-following, timing, and actuator constraints
   // -----------------------------------------------------------------------
   // lookahead_points chooses the steering target. search_window limits the
@@ -184,6 +56,10 @@ PidNode::PidNode()
   // sections that happen to overlap geometrically.
   declare_parameter<int>("lookahead_points", 5);
   declare_parameter<int>("search_window", 20);
+  declare_parameter<double>("reference_linear_velocity", 0.4);
+  declare_parameter<double>("curvature_speed_gain", 0.5);
+  declare_parameter<double>("endpoint_slowdown_distance", 0.5);
+  declare_parameter<double>("maximum_reference_curvature", 5.0);
   declare_parameter<double>("nominal_control_frequency", 30.0);
   declare_parameter<double>("max_control_dt", 0.2);
   declare_parameter<double>("goal_tolerance", 0.08);
@@ -202,13 +78,21 @@ PidNode::PidNode()
   }
 
   lookahead_points_ = static_cast<std::size_t>(lookahead);
-  search_window_ = static_cast<std::size_t>(search_window);
   nominal_dt_ = 1.0 / frequency;
   max_control_dt_ = get_parameter("max_control_dt").as_double();
   goal_tolerance_ = get_parameter("goal_tolerance").as_double();
   max_linear_velocity_ = get_parameter("max_linear_velocity").as_double();
   max_angular_velocity_ = get_parameter("max_angular_velocity").as_double();
   odom_timeout_ = get_parameter("odom_timeout").as_double();
+
+  const std::string controller_mode = get_parameter("controller_mode").as_string();
+  if (controller_mode == "lookahead") {
+    controller_mode_ = ControllerMode::kLookahead;
+  } else if (controller_mode == "cascade") {
+    controller_mode_ = ControllerMode::kCascade;
+  } else {
+    throw std::runtime_error("controller_mode must be either 'lookahead' or 'cascade'");
+  }
 
   // Zero or negative values would make timing, completion, or clamping
   // undefined, so reject the entire configuration before ROS I/O starts.
@@ -231,6 +115,44 @@ PidNode::PidNode()
     get_parameter("angular_kd").as_double(),
     get_parameter("angular_integral_limit").as_double());
 
+  // Configure the cascaded controller even in lookahead mode. This validates a
+  // complete YAML profile at startup and makes mode changes reproducible rather
+  // than dependent on hidden constructor defaults.
+  my_robot_controller::CascadedPidConfig cascade_config;
+  cascade_config.cross_track_kp = get_parameter("cascade_cross_track_kp").as_double();
+  cascade_config.cross_track_ki = get_parameter("cascade_cross_track_ki").as_double();
+  cascade_config.cross_track_kd = get_parameter("cascade_cross_track_kd").as_double();
+  cascade_config.cross_track_integral_limit =
+    get_parameter("cascade_cross_track_integral_limit").as_double();
+  cascade_config.heading_kp = get_parameter("cascade_heading_kp").as_double();
+  cascade_config.heading_ki = get_parameter("cascade_heading_ki").as_double();
+  cascade_config.heading_kd = get_parameter("cascade_heading_kd").as_double();
+  cascade_config.heading_integral_limit =
+    get_parameter("cascade_heading_integral_limit").as_double();
+  cascade_config.maximum_heading_correction =
+    get_parameter("cascade_max_heading_correction").as_double();
+  cascade_config.cross_track_speed_gain =
+    get_parameter("cascade_cross_track_speed_gain").as_double();
+  cascade_config.maximum_linear_velocity = max_linear_velocity_;
+  cascade_config.maximum_angular_velocity = max_angular_velocity_;
+  cascaded_pid_.configure(cascade_config);
+
+  // Configure the common geometric reference independently of PID gains. The
+  // checkpointed lookahead controller does not use reference speed or
+  // curvature for commands yet, but logging them now freezes the interface
+  // that cascade PID, LQR, and MPC will share.
+  my_robot_controller::PathReferenceConfig reference_config;
+  reference_config.search_window = static_cast<std::size_t>(search_window);
+  reference_config.nominal_linear_velocity =
+    get_parameter("reference_linear_velocity").as_double();
+  reference_config.curvature_speed_gain =
+    get_parameter("curvature_speed_gain").as_double();
+  reference_config.endpoint_slowdown_distance =
+    get_parameter("endpoint_slowdown_distance").as_double();
+  reference_config.maximum_abs_curvature =
+    get_parameter("maximum_reference_curvature").as_double();
+  reference_manager_.configure(reference_config);
+
   const std::string csv_path = get_parameter("csv_path").as_string();
   const std::string output_path = get_parameter("output_csv_path").as_string();
   if (output_path.empty()) {
@@ -240,7 +162,11 @@ PidNode::PidNode()
     throw std::runtime_error("Input and output CSV paths must be different");
   }
 
-  load_waypoints(csv_path);
+  reference_manager_.load_csv(csv_path);
+  RCLCPP_INFO(
+    get_logger(), "Loaded %zu waypoints (%.3f m) from %s",
+    reference_manager_.waypoint_count(), reference_manager_.total_length(), csv_path.c_str());
+  RCLCPP_INFO(get_logger(), "Controller mode: %s", controller_mode.c_str());
 
   // Truncate by design: every launch represents one experiment. Users should
   // provide a unique output_csv_path when retaining multiple benchmark runs.
@@ -251,12 +177,16 @@ PidNode::PidNode()
   trajectory_csv_ << std::setprecision(10);
   // Log actual state, the closest projected path reference, both definitions
   // of heading error, and controller outputs. The distinction is important:
-  // path_heading_error is useful for evaluation, while target_heading_error
-  // is the lookahead error actually used by the angular PID.
+  // path_heading_error is the common evaluation error. control_heading_error
+  // records either the lookahead bearing error or the cascade inner-loop error.
   trajectory_csv_ <<
     "time,actual_x,actual_y,actual_yaw,reference_x,reference_y,reference_yaw,"
-    "cross_track_error,path_heading_error,target_heading_error,linear_command,"
-    "angular_command,waypoint_index\n";
+    "cross_track_error,path_heading_error,control_heading_error,linear_command,"
+    "angular_command,waypoint_index,segment_index,segment_fraction,path_progress,"
+    "remaining_path_length,reference_curvature,reference_linear_velocity,"
+    "reference_angular_velocity,desired_heading,heading_correction,"
+    "cross_track_pid_output,heading_pid_output,heading_speed_factor,"
+    "cross_track_speed_factor\n";
   RCLCPP_INFO(get_logger(), "Writing experiment data to %s", output_path.c_str());
 
   // Relative topic names remain namespace/remapping friendly while resolving
@@ -299,6 +229,16 @@ void PidNode::stop()
   publish_stop();
 }
 
+void PidNode::reset_controllers()
+{
+  // Reset both selectable implementations. This keeps a recovered experiment
+  // independent of which mode is active and avoids stale memory if runtime
+  // mode selection is added in a later milestone.
+  linear_pid_.reset();
+  angular_pid_.reset();
+  cascaded_pid_.reset();
+}
+
 void PidNode::watchdog_callback()
 {
   // Before the first odometry sample there is no active command to cancel.
@@ -317,8 +257,7 @@ void PidNode::watchdog_callback()
     publish_stop();
 
     // Old PID memory is invalid after an unknown-duration data interruption.
-    linear_pid_.reset();
-    angular_pid_.reset();
+    reset_controllers();
   }
 }
 
@@ -368,8 +307,7 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
       // Reset their memory and use one nominal interval for safe recovery.
       RCLCPP_WARN(
         get_logger(), "Odometry gap %.3f s exceeded max_control_dt; resetting PID memory", dt);
-      linear_pid_.reset();
-      angular_pid_.reset();
+      reset_controllers();
       dt = nominal_dt_;
     }
   }
@@ -393,125 +331,114 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
 void PidNode::control_loop(double stamp_seconds, double dt)
 {
   // -----------------------------------------------------------------------
-  // 1. Monotonic closest-waypoint search
+  // 1. Obtain the shared path-relative reference
   // -----------------------------------------------------------------------
-  // Scan only forward from the remembered path index. This avoids getting
-  // trapped by a waypoint that was missed between samples and prevents a
-  // figure-eight crossing from making progress jump to an unrelated branch.
-  double min_distance_squared = std::numeric_limits<double>::infinity();
-  std::size_t closest_index = current_wp_index_;
-  const std::size_t search_end = std::min(
-    current_wp_index_ + search_window_ + 1, waypoints_.size());
+  // Projection, signed error, arc-length progress, curvature, and common speed
+  // policy are centralized here so later controllers cannot define them
+  // differently. The manager also protects progress at path intersections.
+  const my_robot_controller::PathReference reference =
+    reference_manager_.update(current_x_, current_y_, current_theta_);
 
-  for (std::size_t i = current_wp_index_; i < search_end; ++i) {
-    const double dx = waypoints_[i].first - current_x_;
-    const double dy = waypoints_[i].second - current_y_;
-    const double distance_squared = dx * dx + dy * dy;
-    if (distance_squared < min_distance_squared) {
-      min_distance_squared = distance_squared;
-      closest_index = i;
-    }
+  // -----------------------------------------------------------------------
+  // 2. Prepare the mode-specific target and completion condition
+  // -----------------------------------------------------------------------
+  // The legacy controller still needs a waypoint target. Calculating it here
+  // also provides meaningful terminal diagnostics for its last CSV row.
+  std::size_t target_index = reference.closest_waypoint_index;
+  double distance_error = reference.distance_to_goal;
+  double target_angle = reference.path.heading;
+  double target_heading_error = reference.heading_error;
+  bool has_final_progress = reference.path.remaining_length <= goal_tolerance_;
+
+  if (controller_mode_ == ControllerMode::kLookahead) {
+    target_index = reference_manager_.lookahead_waypoint_index(lookahead_points_);
+    const my_robot_controller::Point2D & target = reference_manager_.waypoint(target_index);
+    const double x_error = target.x - current_x_;
+    const double y_error = target.y - current_y_;
+    distance_error = std::hypot(x_error, y_error);
+    target_angle = std::atan2(y_error, x_error);
+    target_heading_error =
+      my_robot_controller::wrap_angle(target_angle - current_theta_);
+    has_final_progress = target_index + 1 == reference_manager_.waypoint_count();
   }
-  current_wp_index_ = closest_index;
 
-  // -----------------------------------------------------------------------
-  // 2. Project the robot onto the local path segment
-  // -----------------------------------------------------------------------
-  // Evaluation requires geometric path error, not comparison with an equally
-  // numbered CSV row. Projection finds the closest point on the local segment;
-  // clamping keeps that point between the segment endpoints.
-  const std::size_t segment_start = std::min(current_wp_index_, waypoints_.size() - 2);
-  const auto & segment_a = waypoints_[segment_start];
-  const auto & segment_b = waypoints_[segment_start + 1];
-  const double segment_x = segment_b.first - segment_a.first;
-  const double segment_y = segment_b.second - segment_a.second;
-  const double segment_length_squared = segment_x * segment_x + segment_y * segment_y;
-  double projection = 0.0;
-  if (segment_length_squared > 0.0) {
-    projection = std::clamp(
-      ((current_x_ - segment_a.first) * segment_x +
-      (current_y_ - segment_a.second) * segment_y) / segment_length_squared,
-      0.0, 1.0);
-  }
-  const double reference_x = segment_a.first + projection * segment_x;
-  const double reference_y = segment_a.second + projection * segment_y;
-  const double reference_yaw = std::atan2(segment_y, segment_x);
-  const double path_heading_error = wrap_angle(reference_yaw - current_theta_);
-  const double segment_length = std::sqrt(segment_length_squared);
-
-  // Signed cross-track error is positive when the robot is to the left of the
-  // path tangent and negative when it is to the right.
-  const double cross_track_error = segment_length > 0.0 ?
-    (segment_x * (current_y_ - reference_y) -
-    segment_y * (current_x_ - reference_x)) / segment_length : 0.0;
-
-  // -----------------------------------------------------------------------
-  // 3. Select a forward lookahead target
-  // -----------------------------------------------------------------------
-  // Steering toward a point ahead of the closest point is smoother and less
-  // sensitive to waypoint spacing than steering back toward the closest point.
-  const std::size_t target_index = std::min(
-    current_wp_index_ + lookahead_points_, waypoints_.size() - 1);
-  const double target_x = waypoints_[target_index].first;
-  const double target_y = waypoints_[target_index].second;
-  const double x_error = target_x - current_x_;
-  const double y_error = target_y - current_y_;
-  const double distance_error = std::hypot(x_error, y_error);
-  const double target_angle = std::atan2(y_error, x_error);
-  const double target_heading_error = wrap_angle(target_angle - current_theta_);
-
-  // -----------------------------------------------------------------------
-  // 4. Detect completion near the end of the path
-  // -----------------------------------------------------------------------
-  // Distance alone is insufficient for closed paths such as a figure eight,
-  // whose endpoint may be close to its start. Requiring final-path progress
-  // prevents immediate false completion at such intersections.
-  const auto & goal = waypoints_.back();
-  const double goal_dx = goal.first - current_x_;
-  const double goal_dy = goal.second - current_y_;
-  const double goal_distance = std::hypot(goal_dx, goal_dy);
-  const std::size_t final_approach_index =
-    waypoints_.size() > lookahead_points_ ?
-    waypoints_.size() - lookahead_points_ - 1 : 0;
-
-  if (current_wp_index_ >= final_approach_index && goal_distance <= goal_tolerance_) {
+  // Distance alone is insufficient for a circle or figure eight because its
+  // endpoint is also close to the start. Requiring path progress prevents an
+  // immediate false completion. Cascade uses continuous remaining arc length;
+  // the baseline retains its checkpointed final-lookahead condition.
+  if (has_final_progress && reference.distance_to_goal <= goal_tolerance_) {
     track_complete_ = true;
     publish_stop();
 
     // The terminal pose and zero commands are part of the dataset. Flush here
     // so MATLAB can read a completed experiment even while the node remains up.
-    log_sample(
-      stamp_seconds, reference_x, reference_y, reference_yaw, cross_track_error,
-      path_heading_error, target_heading_error, 0.0, 0.0);
+    ControllerDiagnostics diagnostics;
+    diagnostics.control_heading_error =
+      controller_mode_ == ControllerMode::kCascade ?
+      reference.heading_error : target_heading_error;
+    diagnostics.desired_heading =
+      controller_mode_ == ControllerMode::kCascade ?
+      reference.path.heading : target_angle;
+    log_sample(stamp_seconds, reference, diagnostics, 0.0, 0.0);
     trajectory_csv_.flush();
     RCLCPP_INFO(
       get_logger(), "Track complete at (%.3f, %.3f); final error %.3f m",
-      current_x_, current_y_, goal_distance);
+      current_x_, current_y_, reference.distance_to_goal);
     return;
   }
 
   // -----------------------------------------------------------------------
-  // 5. Calculate coupled linear and angular PID commands
+  // 3. Calculate commands using the selected PID architecture
   // -----------------------------------------------------------------------
-  // During a sharp turn, discard accumulated longitudinal error so it cannot
-  // create a surge when the robot finishes rotating.
-  if (std::abs(target_heading_error) > 0.35) {
-    linear_pid_.reset();
+  ControllerDiagnostics diagnostics;
+  double linear_command = 0.0;
+  double angular_command = 0.0;
+
+  if (controller_mode_ == ControllerMode::kCascade) {
+    // Outer loop: cross-track error -> bounded heading correction.
+    // Inner loop: corrected heading error -> yaw-rate feedback.
+    // The common curvature yaw rate is added as feedforward inside calculate().
+    const my_robot_controller::CascadedPidOutput output = cascaded_pid_.calculate(
+      reference.cross_track_error,
+      reference.path.heading,
+      current_theta_,
+      reference.path.reference_linear_velocity,
+      reference.path.reference_angular_velocity,
+      dt);
+
+    linear_command = output.linear_command;
+    angular_command = output.angular_command;
+    diagnostics.control_heading_error = output.heading_error;
+    diagnostics.desired_heading = output.desired_heading;
+    diagnostics.heading_correction = output.heading_correction;
+    diagnostics.cross_track_pid_output = output.cross_track_pid_output;
+    diagnostics.heading_pid_output = output.heading_pid_output;
+    diagnostics.heading_speed_factor = output.heading_speed_factor;
+    diagnostics.cross_track_speed_factor = output.cross_track_speed_factor;
+  } else {
+    // Checkpointed lookahead baseline: distance error controls translation and
+    // bearing-to-waypoint error controls rotation. Its implementation remains
+    // available so cascade improvements can be measured against it.
+    if (std::abs(target_heading_error) > 0.35) {
+      linear_pid_.reset();
+    }
+
+    linear_command = linear_pid_.calculate(distance_error, dt);
+    const double angular_pid_output = angular_pid_.calculate(target_heading_error, dt);
+
+    // At 90 degrees or more, stop translating and turn in place.
+    const double heading_speed_factor =
+      std::max(0.0, std::cos(target_heading_error));
+    linear_command *= heading_speed_factor;
+    linear_command = std::clamp(linear_command, 0.0, max_linear_velocity_);
+    angular_command = std::clamp(
+      angular_pid_output, -max_angular_velocity_, max_angular_velocity_);
+
+    diagnostics.control_heading_error = target_heading_error;
+    diagnostics.desired_heading = target_angle;
+    diagnostics.heading_pid_output = angular_pid_output;
+    diagnostics.heading_speed_factor = heading_speed_factor;
   }
-
-  double linear_command = linear_pid_.calculate(distance_error, dt);
-  double angular_command = angular_pid_.calculate(target_heading_error, dt);
-
-  // The cosine coupling progressively slows translation as steering error
-  // grows. At 90 degrees or more it becomes zero, making the robot turn in
-  // place rather than drive away from the path.
-  linear_command *= std::max(0.0, std::cos(target_heading_error));
-
-  // This path follower never intentionally reverses. Both commands are also
-  // clamped to the actuator limits shared by future controller comparisons.
-  linear_command = std::clamp(linear_command, 0.0, max_linear_velocity_);
-  angular_command = std::clamp(
-    angular_command, -max_angular_velocity_, max_angular_velocity_);
 
   // Differential-drive motion uses forward velocity (x) and yaw rate (z).
   geometry_msgs::msg::Twist command;
@@ -520,14 +447,12 @@ void PidNode::control_loop(double stamp_seconds, double dt)
   velocity_publisher_->publish(command);
 
   // Log the exact state, reference, errors, and commands from this update.
-  log_sample(
-    stamp_seconds, reference_x, reference_y, reference_yaw, cross_track_error,
-    path_heading_error, target_heading_error, linear_command, angular_command);
+  log_sample(stamp_seconds, reference, diagnostics, linear_command, angular_command);
 }
 
 void PidNode::log_sample(
-  double stamp_seconds, double reference_x, double reference_y, double reference_yaw,
-  double cross_track_error, double path_heading_error, double target_heading_error,
+  double stamp_seconds, const my_robot_controller::PathReference & reference,
+  const ControllerDiagnostics & diagnostics,
   double linear_command, double angular_command)
 {
   // Time is relative to the first odometry sample, making separate runs easy
@@ -536,9 +461,18 @@ void PidNode::log_sample(
   trajectory_csv_ <<
     stamp_seconds - first_stamp_seconds_ << ',' <<
     current_x_ << ',' << current_y_ << ',' << current_theta_ << ',' <<
-    reference_x << ',' << reference_y << ',' << reference_yaw << ',' <<
-    cross_track_error << ',' << path_heading_error << ',' << target_heading_error << ',' <<
-    linear_command << ',' << angular_command << ',' << current_wp_index_ << '\n';
+    reference.path.position.x << ',' << reference.path.position.y << ',' <<
+    reference.path.heading << ',' << reference.cross_track_error << ',' <<
+    reference.heading_error << ',' << diagnostics.control_heading_error << ',' <<
+    linear_command << ',' << angular_command << ',' <<
+    reference.closest_waypoint_index << ',' << reference.path.segment_index << ',' <<
+    reference.path.segment_fraction << ',' << reference.path.progress << ',' <<
+    reference.path.remaining_length << ',' << reference.path.curvature << ',' <<
+    reference.path.reference_linear_velocity << ',' <<
+    reference.path.reference_angular_velocity << ',' << diagnostics.desired_heading << ',' <<
+    diagnostics.heading_correction << ',' << diagnostics.cross_track_pid_output << ',' <<
+    diagnostics.heading_pid_output << ',' << diagnostics.heading_speed_factor << ',' <<
+    diagnostics.cross_track_speed_factor << '\n';
 }
 
 int main(int argc, char ** argv)

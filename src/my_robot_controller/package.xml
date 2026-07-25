@@ -24,6 +24,7 @@
   <!-- Automatically discovered style and metadata checks for `colcon test`. -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <!-- Declare this as a conventional CMake-based ROS 2 package. -->

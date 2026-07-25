@@ -6,6 +6,9 @@ pid_node:
     # Follow Gazebo's /clock rather than host wall time.
     use_sim_time: true
 
+    # Preserve the preliminary waypoint/distance PID in this compatibility file.
+    controller_mode: lookahead
+
     # Linear PID: distance-to-lookahead error [m] -> forward speed [m/s].
     # The integral state is clamped to +/- linear_integral_limit.
     linear_kp: 1.0
@@ -25,6 +28,13 @@ pid_node:
 
     # Maximum forward search span for updating monotonic path progress.
     search_window: 20
+
+    # Shared path reference. The saved lookahead PID logs but does not yet use
+    # these feedforward values; cascade PID, LQR, and MPC will consume them.
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
 
     # Used as fallback dt for the first sample or after a long odometry gap.
     nominal_control_frequency: 30.0

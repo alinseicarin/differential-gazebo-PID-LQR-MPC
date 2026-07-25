@@ -3,6 +3,7 @@
 pid_node:
   ros__parameters:
     use_sim_time: true
+    controller_mode: lookahead
 
     linear_kp: 1.0
     linear_ki: 0.1
@@ -18,6 +19,10 @@ pid_node:
     # so measured differences are attributable to PID gains rather than limits.
     lookahead_points: 5
     search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
     nominal_control_frequency: 30.0
     max_control_dt: 0.2
     goal_tolerance: 0.08

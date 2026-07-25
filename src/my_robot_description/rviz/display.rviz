@@ -1,6 +1,3 @@
-# RViz session for inspecting the robot model and TF tree during simulation.
-# This file controls visualization only and has no effect on Gazebo physics,
-# localization, or controller commands. RViz may rewrite comments when saving.
 Panels:
   - Class: rviz_common/Displays
     Help Height: 78
@@ -11,7 +8,6 @@ Panels:
         - /Status1
         - /Grid1
         - /RobotModel1
-        - /RobotModel1/Status1
         - /RobotModel1/Description Topic1
       Splitter Ratio: 0.5
     Tree Height: 1076
@@ -107,6 +103,10 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        imu_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         left_wheel:
           Alpha: 1
           Show Axes: false
@@ -136,7 +136,11 @@ Visualization Manager:
           Value: true
         chassis:
           Value: true
+        imu_link:
+          Value: true
         left_wheel:
+          Value: true
+        odom:
           Value: true
         right_wheel:
           Value: true
@@ -146,14 +150,17 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        base_footprint:
-          chassis:
-            caster_wheel:
-              {}
-            left_wheel:
-              {}
-            right_wheel:
-              {}
+        odom:
+          base_footprint:
+            chassis:
+              caster_wheel:
+                {}
+              imu_link:
+                {}
+              left_wheel:
+                {}
+              right_wheel:
+                {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -238,5 +245,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1268
-  X: -32
+  X: 1137
   Y: -32
