@@ -4,6 +4,10 @@ pid_node:
   ros__parameters:
     use_sim_time: true
     controller_mode: cascade
+    cascade_longitudinal_kp: 0.8
+    cascade_longitudinal_ki: 0.05
+    cascade_longitudinal_kd: 0.05
+    cascade_longitudinal_integral_limit: 0.5
     cascade_cross_track_kp: 1.5
     cascade_cross_track_ki: 0.0
     cascade_cross_track_kd: 0.20
@@ -13,16 +17,21 @@ pid_node:
     cascade_heading_kd: 0.20
     cascade_heading_integral_limit: 0.5
     cascade_max_heading_correction: 0.7
-    cascade_cross_track_speed_gain: 1.5
     search_window: 20
     reference_linear_velocity: 0.4
     curvature_speed_gain: 0.5
-    endpoint_slowdown_distance: 0.5
+    endpoint_slowdown_distance: 0.0
     maximum_reference_curvature: 5.0
+    trajectory_spatial_step: 0.01
+    maximum_reference_linear_acceleration: 0.5
+    maximum_reference_linear_deceleration: 0.1
     nominal_control_frequency: 30.0
     max_control_dt: 0.2
     goal_tolerance: 0.08
+    goal_heading_tolerance: 0.15
     max_linear_velocity: 1.0
     max_angular_velocity: 1.5
+    translation_stop_lateral_error: 0.75
+    translation_stop_heading_error: 1.2
     odom_timeout: 2.0
     startup_settling_time: 1.0

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run named PID profiles on five nominal paths.
+# Run named PID profiles on five time-parameterized reference trajectories.
 #
 # Usage from inside the development container:
 #   bash scripts/run_pid_benchmarks.sh [result_directory]
@@ -66,10 +66,10 @@ ACTIVE_SIMULATION_PID=""
 ACTIVE_CONTROLLER_PID=""
 
 printf '%s\n' \
-  'profile,track,repetition,seed,success,control_duration,estimated_final_error,estimated_cte_rmse,estimated_cte_max,estimated_heading_rmse,estimated_heading_max,normalized_command_activity,max_v,max_w,final_estimated_x,final_estimated_y,samples' \
+  'profile,track,repetition,seed,success,control_duration,estimated_final_error,estimated_position_rmse,estimated_longitudinal_rmse,estimated_lateral_rmse,estimated_trajectory_heading_rmse,estimated_cte_rmse,estimated_cte_max,estimated_path_heading_rmse,estimated_path_heading_max,normalized_command_activity,max_v,max_w,final_estimated_x,final_estimated_y,samples' \
   > "${ESTIMATOR_SUMMARY}"
 printf '%s\n' \
-  'profile,track,repetition,seed,success,control_duration,true_final_error,true_cte_rmse,true_cte_max,true_heading_rmse,true_heading_max,localization_rmse,localization_max,final_truth_x,final_truth_y,samples' \
+  'profile,track,repetition,seed,success,control_duration,true_final_error,true_position_rmse,true_longitudinal_rmse,true_lateral_rmse,true_trajectory_heading_rmse,true_cte_rmse,true_cte_max,true_path_heading_rmse,true_path_heading_max,localization_rmse,localization_max,final_truth_x,final_truth_y,samples' \
   > "${TRUTH_SUMMARY}"
 
 # Stop an entire process group created with setsid. ROS launch normally cleans
@@ -145,9 +145,9 @@ run_trial()
     tail -n 30 "${sim_log}" || true
     stop_process_group "${simulation_pid}"
     ACTIVE_SIMULATION_PID=""
-    printf '%s,%s,%s,%s,0,,,,,,,,,,,,\n' \
+    printf '%s,%s,%s,%s,0,,,,,,,,,,,,,,,,\n' \
       "${profile}" "${track_name}" "${repetition}" "${seed}" >> "${ESTIMATOR_SUMMARY}"
-    printf '%s,%s,%s,%s,0,,,,,,,,,,,\n' \
+    printf '%s,%s,%s,%s,0,,,,,,,,,,,,,,,\n' \
       "${profile}" "${track_name}" "${repetition}" "${seed}" >> "${TRUTH_SUMMARY}"
     return
   fi
@@ -164,7 +164,7 @@ run_trial()
 
   local complete=0
   for second in $(seq 1 90); do
-    if grep -q 'Track complete' "${controller_log}" 2>/dev/null; then
+    if grep -q 'Trajectory complete' "${controller_log}" 2>/dev/null; then
       complete=1
       break
     fi
@@ -185,7 +185,7 @@ run_trial()
   local settled=0
   if [[ "${complete}" -eq 1 ]]; then
     completion_stamp="$(sed -n \
-      's/.*Track complete at simulation time \([0-9][0-9.]*\) s.*/\1/p' \
+      's/.*Trajectory complete at simulation time \([0-9][0-9.]*\) s.*/\1/p' \
       "${controller_log}" | tail -n 1)"
     if [[ -z "${completion_stamp}" ]]; then
       echo "MISSING_COMPLETION_TIMESTAMP ${trial}"
@@ -204,7 +204,7 @@ run_trial()
         local truth_linear_velocity
         local truth_angular_velocity
         IFS=',' read -r truth_stamp truth_linear_velocity truth_angular_velocity < <(
-          tail -n 1 "${truth_csv}" | awk -F, '{print $2 "," $23 "," $24}')
+          tail -n 1 "${truth_csv}" | awk -F, '{print $2 "," $33 "," $34}')
         if awk \
           -v stamp="${truth_stamp}" -v target="${settling_target}" \
           -v linear="${truth_linear_velocity}" -v angular="${truth_angular_velocity}" \
@@ -253,10 +253,14 @@ run_trial()
         time = $1
         x = $2
         y = $3
-        cte = $8
-        heading = $9
-        v = $11
-        w = $12
+        longitudinal = $11
+        lateral = $12
+        trajectory_heading = $13
+        position = $14
+        cte = $15
+        heading = $16
+        v = $20
+        w = $21
 
         abs_cte = cte < 0 ? -cte : cte
         abs_heading = heading < 0 ? -heading : heading
@@ -272,6 +276,11 @@ run_trial()
           if (dt > 0) {
             cte_squared_integral += cte * cte * dt
             heading_squared_integral += heading * heading * dt
+            position_squared_integral += position * position * dt
+            longitudinal_squared_integral += longitudinal * longitudinal * dt
+            lateral_squared_integral += lateral * lateral * dt
+            trajectory_heading_squared_integral += \
+              trajectory_heading * trajectory_heading * dt
             command_activity += \
               ((v / linear_limit) ^ 2 + (w / angular_limit) ^ 2) * dt
           }
@@ -283,8 +292,12 @@ run_trial()
           dx = goal_x - x
           dy = goal_y - y
           final_error = sqrt(dx * dx + dy * dy)
-          printf "%s,%s,%d,%d,%d,%.6f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.6f,%.6f,%.9f,%.9f,%d\n", \
+          printf "%s,%s,%d,%d,%d,%.6f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.6f,%.6f,%.9f,%.9f,%d\n", \
             profile, track, repetition, seed, success, time, final_error, \
+            sqrt(position_squared_integral / time), \
+            sqrt(longitudinal_squared_integral / time), \
+            sqrt(lateral_squared_integral / time), \
+            sqrt(trajectory_heading_squared_integral / time), \
             sqrt(cte_squared_integral / time), max_cte, \
             sqrt(heading_squared_integral / time), max_heading, command_activity, \
             max_v, max_w, x, y, count
@@ -292,7 +305,7 @@ run_trial()
       }
     ' "${output_csv}" >> "${ESTIMATOR_SUMMARY}"
   else
-    printf '%s,%s,%s,%s,0,,,,,,,,,,,,\n' \
+    printf '%s,%s,%s,%s,0,,,,,,,,,,,,,,,,\n' \
       "${profile}" "${track_name}" "${repetition}" "${seed}" >> "${ESTIMATOR_SUMMARY}"
   fi
 
@@ -314,10 +327,14 @@ run_trial()
         time = $1
         x = $3
         y = $4
-        cte = $9
-        heading = $10
-        localization = $21
-        remaining = $12
+        longitudinal = $11
+        lateral = $12
+        trajectory_heading = $13
+        position = $14
+        cte = $18
+        heading = $19
+        localization = $31
+        remaining = $22
 
         abs_cte = cte < 0 ? -cte : cte
         abs_heading = heading < 0 ? -heading : heading
@@ -332,6 +349,11 @@ run_trial()
           if (dt > 0) {
             cte_squared_integral += cte * cte * dt
             heading_squared_integral += heading * heading * dt
+            position_squared_integral += position * position * dt
+            longitudinal_squared_integral += longitudinal * longitudinal * dt
+            lateral_squared_integral += lateral * lateral * dt
+            trajectory_heading_squared_integral += \
+              trajectory_heading * trajectory_heading * dt
             if (localization != "nan") {
               localization_squared_integral += localization * localization * dt
               localization_duration += dt
@@ -347,8 +369,12 @@ run_trial()
           final_error = sqrt(dx * dx + dy * dy)
           truth_success = (success == 1 && final_error <= goal_tolerance && remaining <= goal_tolerance) ? 1 : 0
           localization_rmse = (localization_duration > 0) ? sqrt(localization_squared_integral / localization_duration) : 0
-          printf "%s,%s,%d,%d,%d,%.6f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%d\n", \
+          printf "%s,%s,%d,%d,%d,%.6f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%d\n", \
             profile, track, repetition, seed, truth_success, control_duration, final_error, \
+            sqrt(position_squared_integral / time), \
+            sqrt(longitudinal_squared_integral / time), \
+            sqrt(lateral_squared_integral / time), \
+            sqrt(trajectory_heading_squared_integral / time), \
             sqrt(cte_squared_integral / time), max_cte, \
             sqrt(heading_squared_integral / time), max_heading, \
             localization_rmse, max_localization, x, y, count
@@ -356,12 +382,12 @@ run_trial()
       }
     ' "${truth_csv}" >> "${TRUTH_SUMMARY}"
   else
-    printf '%s,%s,%s,%s,0,,,,,,,,,,,\n' \
+    printf '%s,%s,%s,%s,0,,,,,,,,,,,,,,,\n' \
       "${profile}" "${track_name}" "${repetition}" "${seed}" >> "${TRUTH_SUMMARY}"
   fi
 
   if [[ "${complete}" -eq 1 ]]; then
-    grep 'Track complete' "${controller_log}" | tail -n 1
+    grep 'Trajectory complete' "${controller_log}" | tail -n 1
     echo "DONE ${trial}"
   else
     echo "FAILED ${trial}"

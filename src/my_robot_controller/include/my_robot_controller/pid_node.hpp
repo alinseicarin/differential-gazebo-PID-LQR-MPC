@@ -2,12 +2,14 @@
 #define PID_NODE_HPP
 
 #include "my_robot_controller/cascaded_pid_controller.hpp"
-#include "my_robot_controller/path_reference_manager.hpp"
+#include "my_robot_controller/motion_command_policy.hpp"
 #include "my_robot_controller/pid_controller.hpp"
+#include "my_robot_controller/trajectory_reference_manager.hpp"
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float64.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -47,10 +49,12 @@ private:
     double control_heading_error{0.0};
     double desired_heading{0.0};
     double heading_correction{0.0};
-    double cross_track_pid_output{0.0};
+    double longitudinal_pid_output{0.0};
+    double lateral_pid_output{0.0};
     double heading_pid_output{0.0};
-    double heading_speed_factor{1.0};
-    double cross_track_speed_factor{1.0};
+    double linear_feedforward_command{0.0};
+    double angular_feedforward_command{0.0};
+    bool translation_safety_stop{false};
   };
 
   /// Store the latest pose, derive dt from its timestamp, and run control.
@@ -70,14 +74,14 @@ private:
 
   /// Write one MATLAB-friendly experiment row with a consistent column order.
   void log_sample(
-    double stamp_seconds, const my_robot_controller::PathReference & reference,
+    double stamp_seconds, const my_robot_controller::TrajectoryReference & reference,
     const ControllerDiagnostics & diagnostics,
     double linear_command, double angular_command);
 
   // Experiment output and controller-independent interpretation of the input
   // path. The manager owns waypoints, projection, progress, and curvature.
   std::ofstream trajectory_csv_;
-  my_robot_controller::PathReferenceManager reference_manager_;
+  my_robot_controller::TrajectoryReferenceManager reference_manager_;
 
   // The lookahead controllers remain intact as the saved preliminary baseline.
   my_robot_controller::PIDController linear_pid_{1.0, 0.1, 0.2, 1.0};
@@ -86,10 +90,15 @@ private:
   // The thesis controller uses an outer cross-track loop and inner heading
   // loop, both contained in a ROS-independent, unit-tested component.
   my_robot_controller::CascadedPidController cascaded_pid_;
+
+  // This policy is deliberately outside every controller. LQR and MPC will
+  // reuse it so both velocity corrections receive the same feedforward and limits.
+  my_robot_controller::MotionCommandPolicy motion_command_policy_;
   ControllerMode controller_mode_{ControllerMode::kCascade};
 
   // ROS communication objects. The watchdog timer is not the control timer.
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr experiment_start_publisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
 
@@ -109,6 +118,7 @@ private:
   double nominal_dt_{1.0 / 30.0};
   double max_control_dt_{0.2};
   double goal_tolerance_{0.08};
+  double goal_heading_tolerance_{0.15};
   double max_linear_velocity_{1.0};
   double max_angular_velocity_{1.5};
   double odom_timeout_{2.0};

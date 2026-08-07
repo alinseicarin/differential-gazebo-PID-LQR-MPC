@@ -35,8 +35,12 @@ PidNode::PidNode()
   // -----------------------------------------------------------------------
   // Cascaded PID gains
   // -----------------------------------------------------------------------
-  // The outer loop maps signed cross-track error to a heading correction. The
-  // inner loop maps corrected heading error to angular-velocity feedback.
+  // The longitudinal loop returns delta_v. The lateral cascade returns
+  // delta_omega through an outer position and inner heading loop.
+  declare_parameter<double>("cascade_longitudinal_kp", 0.8);
+  declare_parameter<double>("cascade_longitudinal_ki", 0.05);
+  declare_parameter<double>("cascade_longitudinal_kd", 0.05);
+  declare_parameter<double>("cascade_longitudinal_integral_limit", 0.5);
   declare_parameter<double>("cascade_cross_track_kp", 1.2);
   declare_parameter<double>("cascade_cross_track_ki", 0.0);
   declare_parameter<double>("cascade_cross_track_kd", 0.15);
@@ -46,7 +50,6 @@ PidNode::PidNode()
   declare_parameter<double>("cascade_heading_kd", 0.15);
   declare_parameter<double>("cascade_heading_integral_limit", 0.5);
   declare_parameter<double>("cascade_max_heading_correction", 0.7);
-  declare_parameter<double>("cascade_cross_track_speed_gain", 1.5);
 
   // -----------------------------------------------------------------------
   // Path-following, timing, and actuator constraints
@@ -58,13 +61,19 @@ PidNode::PidNode()
   declare_parameter<int>("search_window", 20);
   declare_parameter<double>("reference_linear_velocity", 0.4);
   declare_parameter<double>("curvature_speed_gain", 0.5);
-  declare_parameter<double>("endpoint_slowdown_distance", 0.5);
+  declare_parameter<double>("endpoint_slowdown_distance", 0.0);
   declare_parameter<double>("maximum_reference_curvature", 5.0);
+  declare_parameter<double>("trajectory_spatial_step", 0.01);
+  declare_parameter<double>("maximum_reference_linear_acceleration", 0.5);
+  declare_parameter<double>("maximum_reference_linear_deceleration", 0.5);
   declare_parameter<double>("nominal_control_frequency", 30.0);
   declare_parameter<double>("max_control_dt", 0.2);
   declare_parameter<double>("goal_tolerance", 0.08);
+  declare_parameter<double>("goal_heading_tolerance", 0.15);
   declare_parameter<double>("max_linear_velocity", 1.0);
   declare_parameter<double>("max_angular_velocity", 1.5);
+  declare_parameter<double>("translation_stop_lateral_error", 0.75);
+  declare_parameter<double>("translation_stop_heading_error", 1.2);
   declare_parameter<double>("odom_timeout", 2.0);
   declare_parameter<double>("startup_settling_time", 1.0);
 
@@ -82,6 +91,7 @@ PidNode::PidNode()
   nominal_dt_ = 1.0 / frequency;
   max_control_dt_ = get_parameter("max_control_dt").as_double();
   goal_tolerance_ = get_parameter("goal_tolerance").as_double();
+  goal_heading_tolerance_ = get_parameter("goal_heading_tolerance").as_double();
   max_linear_velocity_ = get_parameter("max_linear_velocity").as_double();
   max_angular_velocity_ = get_parameter("max_angular_velocity").as_double();
   odom_timeout_ = get_parameter("odom_timeout").as_double();
@@ -99,6 +109,7 @@ PidNode::PidNode()
   // Zero or negative values would make timing, completion, or clamping
   // undefined, so reject the entire configuration before ROS I/O starts.
   if (max_control_dt_ <= 0.0 || goal_tolerance_ <= 0.0 ||
+    goal_heading_tolerance_ <= 0.0 ||
     max_linear_velocity_ <= 0.0 || max_angular_velocity_ <= 0.0 ||
     odom_timeout_ <= 0.0 || startup_settling_time_ < 0.0)
   {
@@ -123,6 +134,11 @@ PidNode::PidNode()
   // complete YAML profile at startup and makes mode changes reproducible rather
   // than dependent on hidden constructor defaults.
   my_robot_controller::CascadedPidConfig cascade_config;
+  cascade_config.longitudinal_kp = get_parameter("cascade_longitudinal_kp").as_double();
+  cascade_config.longitudinal_ki = get_parameter("cascade_longitudinal_ki").as_double();
+  cascade_config.longitudinal_kd = get_parameter("cascade_longitudinal_kd").as_double();
+  cascade_config.longitudinal_integral_limit =
+    get_parameter("cascade_longitudinal_integral_limit").as_double();
   cascade_config.cross_track_kp = get_parameter("cascade_cross_track_kp").as_double();
   cascade_config.cross_track_ki = get_parameter("cascade_cross_track_ki").as_double();
   cascade_config.cross_track_kd = get_parameter("cascade_cross_track_kd").as_double();
@@ -135,26 +151,40 @@ PidNode::PidNode()
     get_parameter("cascade_heading_integral_limit").as_double();
   cascade_config.maximum_heading_correction =
     get_parameter("cascade_max_heading_correction").as_double();
-  cascade_config.cross_track_speed_gain =
-    get_parameter("cascade_cross_track_speed_gain").as_double();
-  cascade_config.maximum_linear_velocity = max_linear_velocity_;
-  cascade_config.maximum_angular_velocity = max_angular_velocity_;
   cascaded_pid_.configure(cascade_config);
+
+  // Assemble final commands in a controller-independent layer. Future LQR and
+  // MPC nodes must use the same policy rather than embedding a private speed
+  // advantage, curvature term, or actuator saturation in their control law.
+  my_robot_controller::MotionCommandPolicyConfig motion_config;
+  motion_config.maximum_linear_velocity = max_linear_velocity_;
+  motion_config.maximum_angular_velocity = max_angular_velocity_;
+  motion_config.translation_stop_lateral_error =
+    get_parameter("translation_stop_lateral_error").as_double();
+  motion_config.translation_stop_heading_error =
+    get_parameter("translation_stop_heading_error").as_double();
+  motion_command_policy_.configure(motion_config);
 
   // Configure the common geometric reference independently of PID gains. The
   // checkpointed lookahead controller does not use reference speed or
   // curvature for commands yet, but logging them now freezes the interface
   // that cascade PID, LQR, and MPC will share.
-  my_robot_controller::PathReferenceConfig reference_config;
-  reference_config.search_window = static_cast<std::size_t>(search_window);
-  reference_config.nominal_linear_velocity =
+  my_robot_controller::TrajectoryReferenceConfig reference_config;
+  reference_config.path.search_window = static_cast<std::size_t>(search_window);
+  reference_config.path.nominal_linear_velocity =
     get_parameter("reference_linear_velocity").as_double();
-  reference_config.curvature_speed_gain =
+  reference_config.path.curvature_speed_gain =
     get_parameter("curvature_speed_gain").as_double();
-  reference_config.endpoint_slowdown_distance =
+  reference_config.path.endpoint_slowdown_distance =
     get_parameter("endpoint_slowdown_distance").as_double();
-  reference_config.maximum_abs_curvature =
+  reference_config.path.maximum_abs_curvature =
     get_parameter("maximum_reference_curvature").as_double();
+  reference_config.spatial_step = get_parameter("trajectory_spatial_step").as_double();
+  reference_config.maximum_linear_acceleration =
+    get_parameter("maximum_reference_linear_acceleration").as_double();
+  reference_config.maximum_linear_deceleration =
+    get_parameter("maximum_reference_linear_deceleration").as_double();
+  reference_config.maximum_reference_angular_velocity = max_angular_velocity_;
   reference_manager_.configure(reference_config);
 
   const std::string csv_path = get_parameter("csv_path").as_string();
@@ -168,8 +198,9 @@ PidNode::PidNode()
 
   reference_manager_.load_csv(csv_path);
   RCLCPP_INFO(
-    get_logger(), "Loaded %zu waypoints (%.3f m) from %s",
-    reference_manager_.waypoint_count(), reference_manager_.total_length(), csv_path.c_str());
+    get_logger(), "Loaded %zu waypoints (%.3f m, %.3f s reference duration) from %s",
+    reference_manager_.waypoint_count(), reference_manager_.total_length(),
+    reference_manager_.duration(), csv_path.c_str());
   RCLCPP_INFO(get_logger(), "Controller mode: %s", controller_mode.c_str());
 
   // Truncate by design: every launch represents one experiment. Users should
@@ -179,23 +210,26 @@ PidNode::PidNode()
     throw std::runtime_error("Could not create trajectory CSV: " + output_path);
   }
   trajectory_csv_ << std::setprecision(10);
-  // Log actual state, the closest projected path reference, both definitions
-  // of heading error, and controller outputs. The distinction is important:
-  // path_heading_error is the common evaluation error. control_heading_error
-  // records either the lookahead bearing error or the cascade inner-loop error.
+  // Log the timed virtual robot, spatial projection, body-frame tracking errors,
+  // controller feedback, and final constrained commands in one MATLAB table.
   trajectory_csv_ <<
     "time,actual_x,actual_y,actual_yaw,reference_x,reference_y,reference_yaw,"
-    "cross_track_error,path_heading_error,control_heading_error,linear_command,"
-    "angular_command,waypoint_index,segment_index,segment_fraction,path_progress,"
-    "remaining_path_length,reference_curvature,reference_linear_velocity,"
-    "reference_angular_velocity,desired_heading,heading_correction,"
-    "cross_track_pid_output,heading_pid_output,heading_speed_factor,"
-    "cross_track_speed_factor\n";
+    "projection_x,projection_y,projection_yaw,longitudinal_error,lateral_error,"
+    "heading_error,position_error,cross_track_error,path_heading_error,"
+    "control_heading_error,reference_linear_velocity,reference_angular_velocity,"
+    "linear_command,angular_command,linear_feedback_command,angular_feedback_command,"
+    "lateral_pid_output,linear_feedforward_command,angular_feedforward_command,desired_heading,"
+    "heading_correction,reference_progress,reference_remaining_length,"
+    "reference_curvature,projection_progress,projection_remaining_length,"
+    "waypoint_index,segment_index,segment_fraction,reference_time,"
+    "trajectory_complete,translation_safety_stop\n";
   RCLCPP_INFO(get_logger(), "Writing experiment data to %s", output_path.c_str());
 
   // Relative topic names remain namespace/remapping friendly while resolving
   // to /cmd_vel and /odometry/filtered in the default root namespace.
   velocity_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+  experiment_start_publisher_ = create_publisher<std_msgs::msg::Float64>(
+    "experiment_start_time", rclcpp::QoS(1).reliable().transient_local());
   odom_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
     "odometry/filtered", 10,
     std::bind(&PidNode::odom_callback, this, std::placeholders::_1));
@@ -331,8 +365,9 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     odom_received_ = false;
     stop_sent_ = false;
     reset_controllers();
-    reference_manager_.reset_progress();
-    RCLCPP_INFO(get_logger(), "Startup settling complete; starting the path-tracking experiment");
+    reference_manager_.reset_projection();
+    RCLCPP_INFO(
+      get_logger(), "Startup settling complete; starting the timed trajectory experiment");
   }
 
   // Compute dt from ROS timestamps rather than the host clock. Therefore the
@@ -341,6 +376,9 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
   double dt = nominal_dt_;
   if (!odom_received_) {
     first_stamp_seconds_ = stamp_seconds;
+    std_msgs::msg::Float64 start_message;
+    start_message.data = first_stamp_seconds_;
+    experiment_start_publisher_->publish(start_message);
   } else {
     dt = stamp_seconds - previous_stamp_seconds_;
     if (dt <= 0.0) {
@@ -378,24 +416,24 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
 void PidNode::control_loop(double stamp_seconds, double dt)
 {
   // -----------------------------------------------------------------------
-  // 1. Obtain the shared path-relative reference
+  // 1. Obtain the shared time-indexed trajectory and spatial projection
   // -----------------------------------------------------------------------
-  // Projection, signed error, arc-length progress, curvature, and common speed
-  // policy are centralized here so later controllers cannot define them
-  // differently. The manager also protects progress at path intersections.
-  const my_robot_controller::PathReference reference =
-    reference_manager_.update(current_x_, current_y_, current_theta_);
+  const double elapsed_time = stamp_seconds - first_stamp_seconds_;
+  const my_robot_controller::TrajectoryReference reference =
+    reference_manager_.update(
+    elapsed_time, current_x_, current_y_, current_theta_);
 
   // -----------------------------------------------------------------------
   // 2. Prepare the mode-specific target and completion condition
   // -----------------------------------------------------------------------
-  // The legacy controller still needs a waypoint target. Calculating it here
-  // also provides meaningful terminal diagnostics for its last CSV row.
-  std::size_t target_index = reference.closest_waypoint_index;
-  double distance_error = reference.distance_to_goal;
-  double target_angle = reference.path.heading;
-  double target_heading_error = reference.heading_error;
-  bool has_final_progress = reference.path.remaining_length <= goal_tolerance_;
+  // The legacy lookahead mode remains available only as a historical baseline.
+  std::size_t target_index = reference.projection.closest_waypoint_index;
+  double distance_error = reference.projection.distance_to_goal;
+  double target_angle = reference.projection.path.heading;
+  double target_heading_error = reference.projection.heading_error;
+  bool experiment_complete =
+    reference.trajectory_complete && reference.position_error <= goal_tolerance_ &&
+    std::abs(reference.heading_error) <= goal_heading_tolerance_;
 
   if (controller_mode_ == ControllerMode::kLookahead) {
     target_index = reference_manager_.lookahead_waypoint_index(lookahead_points_);
@@ -406,14 +444,14 @@ void PidNode::control_loop(double stamp_seconds, double dt)
     target_angle = std::atan2(y_error, x_error);
     target_heading_error =
       my_robot_controller::wrap_angle(target_angle - current_theta_);
-    has_final_progress = target_index + 1 == reference_manager_.waypoint_count();
+    experiment_complete =
+      target_index + 1 == reference_manager_.waypoint_count() &&
+      reference.projection.distance_to_goal <= goal_tolerance_;
   }
 
-  // Distance alone is insufficient for a circle or figure eight because its
-  // endpoint is also close to the start. Requiring path progress prevents an
-  // immediate false completion. Cascade uses continuous remaining arc length;
-  // the baseline retains its checkpointed final-lookahead condition.
-  if (has_final_progress && reference.distance_to_goal <= goal_tolerance_) {
+  // Timed tracking ends only after the virtual robot reaches the final pose and
+  // the real robot catches up in both position and orientation.
+  if (experiment_complete) {
     track_complete_ = true;
     publish_stop();
 
@@ -425,13 +463,15 @@ void PidNode::control_loop(double stamp_seconds, double dt)
       reference.heading_error : target_heading_error;
     diagnostics.desired_heading =
       controller_mode_ == ControllerMode::kCascade ?
-      reference.path.heading : target_angle;
+      reference.trajectory.heading : target_angle;
     log_sample(stamp_seconds, reference, diagnostics, 0.0, 0.0);
     trajectory_csv_.flush();
     RCLCPP_INFO(
       get_logger(),
-      "Track complete at simulation time %.6f s at (%.3f, %.3f); final error %.3f m",
-      stamp_seconds, current_x_, current_y_, reference.distance_to_goal);
+      "Trajectory complete at simulation time %.6f s at (%.3f, %.3f); "
+      "position error %.3f m, heading error %.3f rad",
+      stamp_seconds, current_x_, current_y_, reference.position_error,
+      reference.heading_error);
     return;
   }
 
@@ -443,26 +483,39 @@ void PidNode::control_loop(double stamp_seconds, double dt)
   double angular_command = 0.0;
 
   if (controller_mode_ == ControllerMode::kCascade) {
-    // Outer loop: cross-track error -> bounded heading correction.
-    // Inner loop: corrected heading error -> yaw-rate feedback.
-    // The common curvature yaw rate is added as feedforward inside calculate().
+    // Common error state: [e_x, e_y, e_theta]. The PID returns the same two
+    // feedback quantities [delta_v, delta_omega] planned for LQR and MPC.
     const my_robot_controller::CascadedPidOutput output = cascaded_pid_.calculate(
-      reference.cross_track_error,
-      reference.path.heading,
+      reference.longitudinal_error,
+      reference.lateral_error,
+      reference.trajectory.heading,
       current_theta_,
-      reference.path.reference_linear_velocity,
-      reference.path.reference_angular_velocity,
       dt);
 
-    linear_command = output.linear_command;
-    angular_command = output.angular_command;
+    // The common layer adds the virtual robot's feedforward velocities and
+    // applies the same safety and saturation rules to every controller family.
+    const my_robot_controller::MotionCommand motion_command =
+      motion_command_policy_.calculate(
+      reference.trajectory.reference_linear_velocity,
+      reference.trajectory.reference_angular_velocity,
+      reference.lateral_error,
+      reference.heading_error,
+      output.longitudinal_pid_output,
+      output.heading_pid_output);
+
+    linear_command = motion_command.linear_command;
+    angular_command = motion_command.angular_command;
     diagnostics.control_heading_error = output.heading_error;
     diagnostics.desired_heading = output.desired_heading;
     diagnostics.heading_correction = output.heading_correction;
-    diagnostics.cross_track_pid_output = output.cross_track_pid_output;
+    diagnostics.longitudinal_pid_output = output.longitudinal_pid_output;
+    diagnostics.lateral_pid_output = output.lateral_pid_output;
     diagnostics.heading_pid_output = output.heading_pid_output;
-    diagnostics.heading_speed_factor = output.heading_speed_factor;
-    diagnostics.cross_track_speed_factor = output.cross_track_speed_factor;
+    diagnostics.linear_feedforward_command =
+      motion_command.linear_feedforward_command;
+    diagnostics.angular_feedforward_command =
+      motion_command.angular_feedforward_command;
+    diagnostics.translation_safety_stop = motion_command.translation_safety_stop;
   } else {
     // Checkpointed lookahead baseline: distance error controls translation and
     // bearing-to-waypoint error controls rotation. Its implementation remains
@@ -485,7 +538,6 @@ void PidNode::control_loop(double stamp_seconds, double dt)
     diagnostics.control_heading_error = target_heading_error;
     diagnostics.desired_heading = target_angle;
     diagnostics.heading_pid_output = angular_pid_output;
-    diagnostics.heading_speed_factor = heading_speed_factor;
   }
 
   // Differential-drive motion uses forward velocity (x) and yaw rate (z).
@@ -499,7 +551,7 @@ void PidNode::control_loop(double stamp_seconds, double dt)
 }
 
 void PidNode::log_sample(
-  double stamp_seconds, const my_robot_controller::PathReference & reference,
+  double stamp_seconds, const my_robot_controller::TrajectoryReference & reference,
   const ControllerDiagnostics & diagnostics,
   double linear_command, double angular_command)
 {
@@ -509,18 +561,29 @@ void PidNode::log_sample(
   trajectory_csv_ <<
     stamp_seconds - first_stamp_seconds_ << ',' <<
     current_x_ << ',' << current_y_ << ',' << current_theta_ << ',' <<
-    reference.path.position.x << ',' << reference.path.position.y << ',' <<
-    reference.path.heading << ',' << reference.cross_track_error << ',' <<
-    reference.heading_error << ',' << diagnostics.control_heading_error << ',' <<
+    reference.trajectory.position.x << ',' << reference.trajectory.position.y << ',' <<
+    reference.trajectory.heading << ',' <<
+    reference.projection.path.position.x << ',' <<
+    reference.projection.path.position.y << ',' << reference.projection.path.heading << ',' <<
+    reference.longitudinal_error << ',' << reference.lateral_error << ',' <<
+    reference.heading_error << ',' << reference.position_error << ',' <<
+    reference.projection.cross_track_error << ',' << reference.projection.heading_error << ',' <<
+    diagnostics.control_heading_error << ',' <<
+    reference.trajectory.reference_linear_velocity << ',' <<
+    reference.trajectory.reference_angular_velocity << ',' <<
     linear_command << ',' << angular_command << ',' <<
-    reference.closest_waypoint_index << ',' << reference.path.segment_index << ',' <<
-    reference.path.segment_fraction << ',' << reference.path.progress << ',' <<
-    reference.path.remaining_length << ',' << reference.path.curvature << ',' <<
-    reference.path.reference_linear_velocity << ',' <<
-    reference.path.reference_angular_velocity << ',' << diagnostics.desired_heading << ',' <<
-    diagnostics.heading_correction << ',' << diagnostics.cross_track_pid_output << ',' <<
-    diagnostics.heading_pid_output << ',' << diagnostics.heading_speed_factor << ',' <<
-    diagnostics.cross_track_speed_factor << '\n';
+    diagnostics.longitudinal_pid_output << ',' << diagnostics.heading_pid_output << ',' <<
+    diagnostics.lateral_pid_output << ',' <<
+    diagnostics.linear_feedforward_command << ',' <<
+    diagnostics.angular_feedforward_command << ',' << diagnostics.desired_heading << ',' <<
+    diagnostics.heading_correction << ',' << reference.trajectory.progress << ',' <<
+    reference.trajectory.remaining_length << ',' << reference.trajectory.curvature << ',' <<
+    reference.projection.path.progress << ',' <<
+    reference.projection.path.remaining_length << ',' <<
+    reference.projection.closest_waypoint_index << ',' <<
+    reference.trajectory.segment_index << ',' << reference.trajectory.segment_fraction << ',' <<
+    reference.reference_time << ',' << (reference.trajectory_complete ? 1 : 0) << ',' <<
+    (diagnostics.translation_safety_stop ? 1 : 0) << '\n';
 }
 
 int main(int argc, char ** argv)

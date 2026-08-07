@@ -1,4 +1,4 @@
-"""Launch the PID path follower with reproducible experiment parameters."""
+"""Launch timed PID trajectory tracking with reproducible experiment parameters."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument

@@ -120,7 +120,7 @@ echo "Fault schedule: start=${FAULT_START_DELAY}s duration=${FAULT_DURATION}s an
 
 complete=0
 for second in $(seq 1 60); do
-  if grep -q 'Track complete' "${CONTROL_GRAPH_LOG}" 2>/dev/null; then
+  if grep -q 'Trajectory complete' "${CONTROL_GRAPH_LOG}" 2>/dev/null; then
     complete=1
     break
   fi
@@ -137,7 +137,7 @@ completion_stamp=""
 settled=0
 if [[ "${complete}" -eq 1 ]]; then
   completion_stamp="$(sed -n \
-    's/.*Track complete at simulation time \([0-9][0-9.]*\) s.*/\1/p' \
+    's/.*Trajectory complete at simulation time \([0-9][0-9.]*\) s.*/\1/p' \
     "${CONTROL_GRAPH_LOG}" | tail -n 1)"
 fi
 
@@ -147,7 +147,7 @@ if [[ -n "${completion_stamp}" ]]; then
   for attempt in $(seq 1 150); do
     if [[ -s "${GROUND_TRUTH_CSV}" ]]; then
       IFS=',' read -r truth_stamp truth_linear_velocity truth_angular_velocity < <(
-        tail -n 1 "${GROUND_TRUTH_CSV}" | awk -F, '{print $2 "," $23 "," $24}')
+        tail -n 1 "${GROUND_TRUTH_CSV}" | awk -F, '{print $2 "," $33 "," $34}')
       if awk \
         -v stamp="${truth_stamp}" -v target="${settling_target}" \
         -v linear="${truth_linear_velocity}" -v angular="${truth_angular_velocity}" \
@@ -220,8 +220,8 @@ awk -F, \
   {
     time = $1
     stamp = $2
-    cte = $9
-    heading = $10
+    cte = $18
+    heading = $19
     abs_cte = cte < 0 ? -cte : cte
     abs_heading = heading < 0 ? -heading : heading
 
@@ -287,7 +287,7 @@ awk -F, '
   }
 ' "${APPLIED_COMMAND_CSV}" | tee -a "${SUMMARY_PATH}"
 
-grep -E 'Command fault (started|ended)|Track complete' \
+grep -E 'Command fault (started|ended)|Trajectory complete' \
   "${CONTROL_GRAPH_LOG}" | tail -n 5 || true
 
 if [[ "${complete}" -ne 1 ]]; then

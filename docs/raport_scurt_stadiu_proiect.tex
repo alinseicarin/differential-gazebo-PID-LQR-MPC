@@ -36,8 +36,10 @@ Etapa PID este implementată și stabilizată. Au fost realizate:
     robotului pe cale, care furnizează eroarea laterală, eroarea de orientare și
     curbura locală;
     \item un regulator PID în cascadă: bucla exterioară transformă eroarea
-    laterală într-o corecție de orientare, iar bucla interioară comandă viteza
-    unghiulară; viteza liniară este adaptată la dificultatea locală a traseului;
+    laterală într-o corecție de orientare, iar bucla interioară furnizează
+    corecția vitezei unghiulare;
+    \item o politică de comandă comună PID--LQR--MPC, care impune aceeași viteză
+    de referință, aceeași anticipare a curburii și aceleași saturații;
     \item trasee de test: dreaptă, sinusoidă, viraj, cerc și figură opt;
     \item un test repetabil de respingere a perturbațiilor, prin adăugarea
     temporară a unei erori asupra comenzii de viteză unghiulară;
@@ -51,10 +53,11 @@ Etapa PID este implementată și stabilizată. Au fost realizate:
 În verificările preliminare, toate cele cinci trasee au fost finalizate în
 toleranța fizică de $0{,}15\,\mathrm{m}$. Valorile RMS ale erorii laterale reale
 au fost cuprinse între aproximativ $0{,}002\,\mathrm{m}$ și
-$0{,}042\,\mathrm{m}$. La aplicarea unei perturbații de
+$0{,}086\,\mathrm{m}$. La aplicarea unei perturbații de
 $0{,}6\,\mathrm{rad/s}$ timp de o secundă, eroarea laterală maximă a fost de
-aproximativ $0{,}056\,\mathrm{m}$, iar abaterea reziduală a revenit sub
-$0{,}001\,\mathrm{m}$. Aceste rezultate reprezintă validarea funcțională a
+aproximativ $0{,}057\,\mathrm{m}$, revenirea strictă a durat
+$4{,}361\,\mathrm{s}$, iar abaterea laterală finală a fost
+$0{,}003\,\mathrm{m}$. Aceste rezultate reprezintă validarea funcțională a
 implementării, nu încă experimentul comparativ final.
 
 Identificarea de sistem a fost eliminată din planul principal. În simularea

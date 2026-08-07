@@ -633,7 +633,10 @@ measured robot heading -------+--> heading error
                                       v
                                   inner PID
                                       |
-curvature feedforward ---------------+--> angular command
+                                      v
+                              yaw-rate correction
+                                      |
+curvature feedforward ---------------+--> common command policy --> angular command
 ```
 
 It does **not** mean that the robot waits for one loop to finish before running the next. Both loops are evaluated during the same odometry callback.
@@ -642,32 +645,28 @@ It does **not** mean that the robot waits for one loop to finish before running 
 
 ## 12. Exact inputs and outputs of the cascade
 
-`CascadedPidController::calculate()` receives six quantities:
+`CascadedPidController::calculate()` receives four quantities:
 
 | Input | Meaning | Unit | Source |
 |---|---|---:|---|
 | `cross_track_error` | Signed perpendicular position error | m | Path manager |
 | `path_heading` | Local path tangent angle | rad | Path manager |
 | `robot_heading` | Estimated robot yaw | rad | EKF odometry |
-| `reference_linear_velocity` | Geometry-based forward-speed reference | m/s | Path manager |
-| `reference_angular_velocity` | Curvature feedforward yaw rate | rad/s | Path manager |
 | `dt` | Time since previous accepted odometry | s | PID node |
 
 It returns a `CascadedPidOutput` containing:
 
 | Output | Meaning | Unit |
 |---|---|---:|
-| `linear_command` | Requested forward velocity | m/s |
-| `angular_command` | Requested yaw rate | rad/s |
 | `desired_heading` | Path heading after lateral correction | rad |
 | `heading_correction` | Bounded outer-loop correction | rad |
 | `cross_track_pid_output` | Raw outer PID output before sign and clamp | rad by intended tuning |
 | `heading_error` | Desired heading minus robot heading, wrapped | rad |
 | `heading_pid_output` | Inner feedback yaw rate | rad/s |
-| `heading_speed_factor` | Slowdown due to misalignment | dimensionless |
-| `cross_track_speed_factor` | Slowdown due to lateral displacement | dimensionless |
 
-Only `linear_command` and `angular_command` are sent to the robot. The other outputs are diagnostics logged for explanation, tuning, and thesis plots.
+The PID output is therefore only the controller-specific yaw-rate correction.
+`MotionCommandPolicy` separately combines it with the common path speed and
+curvature feedforward, then applies the common safety guard and actuator limits.
 
 ---
 
@@ -799,49 +798,36 @@ The inner loop immediately receives a large negative error and commands a right 
 
 ---
 
-## 15. Forward-speed command
+## 15. Controller-independent motion-command policy
 
-Forward speed is not produced by a third PID in cascade mode. It begins with the common geometry-based `v_ref` and is multiplied by two safety/performance factors.
-
-### 15.1 Heading factor
-
-```text
-heading_speed_factor = max(0, cos(e_heading))
-```
-
-Examples:
-
-- heading error `0 deg`: factor `1`, no reduction;
-- heading error `60 deg`: factor `0.5`;
-- heading error `90 deg`: factor `0`;
-- error beyond `90 deg`: cosine is negative but `max(0, ...)` keeps the factor at zero.
-
-Thus a badly rotated robot turns toward the desired direction before it drives forward in the wrong direction.
-
-### 15.2 Cross-track factor
+Forward speed is not produced by the PID. In ordinary operation it is exactly
+the geometry-based reference, limited by the shared actuator bound:
 
 ```text
-cross_track_speed_factor = 1 / (1 + 1.5*abs(e_y))
+v_cmd = clamp(v_ref, 0, v_max)
 ```
 
-This factor is symmetric on either side of the path. It approaches 1 at zero displacement and decreases smoothly as displacement grows.
+It is no longer multiplied by continuous PID-error factors. Otherwise a
+controller with worse tracking would receive a lower speed and could appear
+better in the PID/LQR/MPC comparison merely because it moved more slowly.
 
-### 15.3 Final linear command
+Only a gross deviation activates the common emergency guard:
 
 ```text
-v_cmd = clamp(
-    v_ref * heading_speed_factor * cross_track_speed_factor,
-    0,
-    1.0)
+translation_safety_stop =
+    abs(e_y) >= 0.75 m or abs(path_heading_error) >= 1.2 rad
 ```
 
-The lower bound is zero, so this controller never requests reverse motion. The upper bound is the configured actuator-level safety limit.
+When it is active, `v_cmd` is zero but angular feedback remains available for
+recovery. The common layer then computes:
 
-There are therefore three successive reasons for slowing down:
+```text
+w_ff  = kappa * v_cmd
+w_cmd = clamp(w_ff + delta_w_controller, -w_max, w_max)
+```
 
-1. path curvature, applied by the common reference manager;
-2. proximity to the endpoint, applied by the common reference manager;
-3. current tracking difficulty, applied by the cascaded controller through heading and cross-track factors.
+PID, LQR, and MPC must all supply the same type of `delta_w_controller` output
+to this exact policy.
 
 ---
 
@@ -868,13 +854,14 @@ For every valid filtered odometry message, the exact logical sequence is:
 17. Add it to the path tangent to form desired heading.
 18. Compare desired heading with measured robot heading.
 19. Run the inner heading PID.
-20. Add curvature feedforward and clamp the angular command.
-21. Calculate heading and cross-track speed factors.
-22. Multiply and clamp the linear command.
-23. Put `v_cmd` in `Twist.linear.x`.
-24. Put `w_cmd` in `Twist.angular.z`.
-25. Publish the `Twist`.
-26. Write the measured state, path reference, errors, diagnostics, and nominal commands to CSV.
+20. Pass the PID yaw-rate feedback to the common motion-command policy.
+21. Apply the common path-defined speed or the gross-deviation safety stop.
+22. Calculate curvature feedforward from the commanded speed.
+23. Add feedback and apply the common linear/angular limits.
+24. Put `v_cmd` in `Twist.linear.x`.
+25. Put `w_cmd` in `Twist.angular.z`.
+26. Publish the `Twist`.
+27. Write the measured state, path reference, errors, diagnostics, and nominal commands to CSV.
 
 The actual P and D arithmetic is only a few lines. Most surrounding code exists to make sure those few lines receive the correct geometry, time interval, configuration, and safe data and to make the experiment repeatable and measurable.
 
@@ -920,26 +907,20 @@ Inner proportional output:
 u_heading = 3.0 * (-0.05) = -0.15 rad/s
 ```
 
-Angular command:
+PID-specific angular correction:
 
 ```text
-w_cmd = w_ref + u_heading
+delta_w_PID = u_heading = -0.15 rad/s
+```
+
+Common motion policy:
+
+```text
+v_cmd = v_ref = 0.40 m/s
+w_ff = kappa*v_cmd = 0.08 rad/s
+w_cmd = w_ff + delta_w_PID
       = 0.08 - 0.15
       = -0.07 rad/s
-```
-
-Speed factors:
-
-```text
-heading_factor = cos(-0.05) approximately 0.9988
-cross-track factor = 1/(1 + 1.5*0.10) approximately 0.8696
-```
-
-Linear command:
-
-```text
-v_cmd = 0.40 * 0.9988 * 0.8696
-      approximately 0.347 m/s
 ```
 
 This example also shows why the angular command cannot be understood from cross-track error alone. The path curvature feedforward and the robot's measured heading both participate.
@@ -1119,8 +1100,8 @@ The PID output file is the main source for MATLAB analysis.
 | `heading_correction` | rad | Bounded signed outer correction |
 | `cross_track_pid_output` | rad intended | Raw outer PID output before negation/clamp |
 | `heading_pid_output` | rad/s | Inner feedback before adding feedforward |
-| `heading_speed_factor` | dimensionless | `max(0, cos(inner error))` |
-| `cross_track_speed_factor` | dimensionless | Lateral-error slowdown factor |
+| `angular_feedforward_command` | rad/s | Feedforward calculated from the actually commanded common speed |
+| `translation_safety_stop` | 0 or 1 | Whether a gross common path error stopped translation |
 
 During a disturbance run, `linear_command` and `angular_command` remain the **nominal controller outputs**. Use the injector CSV to see what Gazebo actually received.
 
@@ -1162,24 +1143,29 @@ The implementation contains parameter validation and the discrete P, I, and D eq
 The header defines two plain data structures:
 
 - `CascadedPidConfig`: everything tunable;
-- `CascadedPidOutput`: command plus diagnostics.
+- `CascadedPidOutput`: angular feedback plus diagnostics.
 
 It then declares `CascadedPidController`, which owns the two generic PIDs.
 
 The implementation:
 
-1. validates gains and limits;
+1. validates gains and the outer heading-correction limit;
 2. configures both PID objects;
 3. calculates outer correction;
 4. calculates inner feedback;
-5. adds curvature feedforward;
-6. calculates speed factors;
-7. applies command limits;
-8. exposes reset for both loops.
+5. exposes reset for both loops.
 
 This file also has no ROS dependency. That is architecturally important: controller mathematics can be tested without launching a robot simulator.
 
-### 24.3 `path_reference_manager.hpp` and `.cpp`
+### 24.3 `motion_command_policy.hpp` and `.cpp`
+
+This controller-independent component receives the common path speed and
+curvature plus one controller's yaw-rate correction. It applies the shared
+gross-deviation translation guard, recomputes curvature feedforward from the
+actual linear command, and enforces the common actuator limits. PID, LQR, and
+MPC must all pass through this layer.
+
+### 24.4 `path_reference_manager.hpp` and `.cpp`
 
 These files own all controller-independent path geometry:
 
@@ -1194,7 +1180,7 @@ These files own all controller-independent path geometry:
 
 Centralizing this logic prevents a future LQR from receiving a slightly different cross-track error than PID, which would make a thesis comparison less fair.
 
-### 24.4 `pid_node.hpp`
+### 24.5 `pid_node.hpp`
 
 The node header is the structural overview of the ROS adapter. It declares:
 
@@ -1209,7 +1195,7 @@ The node header is the structural overview of the ROS adapter. It declares:
 
 Members ending in `_` are class-owned state. This trailing-underscore convention helps distinguish persistent members from local variables and function arguments.
 
-### 24.5 `pid_node.cpp`
+### 24.6 `pid_node.cpp`
 
 This is the integration layer. It is long because it connects configuration, files, ROS messages, timing, safety, geometry, controller selection, publication, and logging.
 
@@ -1227,11 +1213,11 @@ Its main sections are:
 
 `rclcpp::spin(node)` is the event loop. It waits for incoming messages and timer events, then invokes registered callbacks. Without `spin`, constructing subscriptions would not cause callbacks to execute.
 
-### 24.6 `command_disturbance.hpp` and `.cpp`
+### 24.7 `command_disturbance.hpp` and `.cpp`
 
 These define controller-independent fault arithmetic. The class receives scalar nominal velocities and elapsed time and returns nominal/applied velocities plus a Boolean state. Because it has no ROS dependency, timing boundaries, saturation, and sign behavior can be unit-tested deterministically.
 
-### 24.7 `command_disturbance_injector_node.cpp`
+### 24.8 `command_disturbance_injector_node.cpp`
 
 This is the ROS adapter around the pure disturbance class. It:
 
@@ -1244,21 +1230,21 @@ This is the ROS adapter around the pure disturbance class. It:
 - reports fault start/end transitions;
 - stops the robot if controller input disappears.
 
-### 24.8 YAML configuration
+### 24.9 YAML configuration
 
 `pid_cascade.yaml` is the experiment tuning record. It selects cascade mode and supplies all gains, reference settings, limits, and timing values. The C++ defaults are safety fallbacks and parameter declarations; the YAML is where normal experimental tuning should occur.
 
 To make the robot modestly faster in a normal tuned experiment, change `reference_linear_velocity` in a YAML profile. Do not duplicate the same tuning change in C++ unless the intention is to change the fallback default used when no YAML supplies that parameter.
 
-### 24.9 Launch files
+### 24.10 Launch files
 
 Launch files describe which processes run, their parameters, and topic remappings. They do not implement PID mathematics. Their main scientific role is reproducibility: the same executable can be used with a named configuration, track, output location, and fault schedule.
 
-### 24.10 URDF and EKF YAML
+### 24.11 URDF and EKF YAML
 
 The URDF is not merely visual geometry. It specifies masses, inertias, wheels, joints, friction, sensors, and the differential-drive actuator plugin. The EKF YAML decides which simulated measurements form the pose fed back to the controller. Both influence closed-loop behavior even though neither contains a PID gain.
 
-### 24.11 CMake
+### 24.12 CMake
 
 `CMakeLists.txt` tells the compiler which libraries and executables exist and how they depend on each other:
 
@@ -1268,11 +1254,14 @@ pid_controller library --------+
 path_reference_manager library +--> cascaded_pid_controller library
                                |                 |
                                +-----------------+--> pid_node executable
+                                                  ^
+motion_command_policy library --------------------+
 
 command_disturbance library --> command_disturbance_injector executable
 ```
 
-It also registers unit tests and installs headers, configuration, launch files, and five tracks so ROS can locate them through the package index.
+It also registers unit tests and installs headers, configuration, launch files,
+and seven tracks so ROS can locate them through the package index.
 
 ---
 
@@ -1506,10 +1495,10 @@ For the cascade:
 - outer responsiveness: `cascade_cross_track_kp`, `ki`, `kd`;
 - inner heading response: `cascade_heading_kp`, `ki`, `kd`;
 - maximum lateral steering intention: `cascade_max_heading_correction`;
-- slowdown while displaced: `cascade_cross_track_speed_gain`;
 - ordinary desired speed: `reference_linear_velocity`;
 - curve slowdown: `curvature_speed_gain`;
 - endpoint braking distance: `endpoint_slowdown_distance`;
+- emergency translation thresholds: `translation_stop_cross_track_error`, `translation_stop_heading_error`;
 - final safety limits: `max_linear_velocity`, `max_angular_velocity`.
 
 C++ defaults should be changed only when changing the software's fallback behavior or interface. A tuning profile must not require recompilation.

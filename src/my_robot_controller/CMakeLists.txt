@@ -24,12 +24,20 @@ endif()
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 # Build controller-independent path geometry as a reusable library. Future PID,
 # LQR, and MPC executables must share this exact reference interpretation.
 add_library(path_reference_manager src/path_reference_manager.cpp)
 target_include_directories(path_reference_manager PUBLIC include)
 target_compile_features(path_reference_manager PUBLIC cxx_std_17)
+
+# Convert the geometric path into a deterministic time-indexed virtual robot
+# with common speed, yaw-rate, acceleration, and deceleration references.
+add_library(trajectory_reference_manager src/trajectory_reference_manager.cpp)
+target_include_directories(trajectory_reference_manager PUBLIC include)
+target_compile_features(trajectory_reference_manager PUBLIC cxx_std_17)
+target_link_libraries(trajectory_reference_manager PUBLIC path_reference_manager)
 
 # The generic PID implementation is shared by the preliminary lookahead loops
 # and the thesis cascade, preventing small mathematical differences between
@@ -38,8 +46,14 @@ add_library(pid_controller src/pid_controller.cpp)
 target_include_directories(pid_controller PUBLIC include)
 target_compile_features(pid_controller PUBLIC cxx_std_17)
 
-# Keep the cascade free of ROS interfaces so its signs, feedforward, immediate
-# heading response, and limits can be tested without launching Gazebo.
+# Add both controller corrections to trajectory feedforward using one shared
+# safety policy and one set of actuator limits.
+add_library(motion_command_policy src/motion_command_policy.cpp)
+target_include_directories(motion_command_policy PUBLIC include)
+target_compile_features(motion_command_policy PUBLIC cxx_std_17)
+
+# Keep the cascade free of ROS interfaces so its signs, immediate heading
+# response, and feedback calculation can be tested without launching Gazebo.
 add_library(cascaded_pid_controller src/cascaded_pid_controller.cpp)
 target_include_directories(cascaded_pid_controller PUBLIC include)
 target_compile_features(cascaded_pid_controller PUBLIC cxx_std_17)
@@ -57,8 +71,9 @@ add_executable(pid_node src/pid_node.cpp)
 target_include_directories(pid_node PUBLIC include)
 target_compile_features(pid_node PUBLIC cxx_std_17)
 target_link_libraries(
-  pid_node path_reference_manager pid_controller cascaded_pid_controller)
-ament_target_dependencies(pid_node rclcpp geometry_msgs nav_msgs)
+  pid_node path_reference_manager pid_controller cascaded_pid_controller
+  motion_command_policy trajectory_reference_manager)
+ament_target_dependencies(pid_node rclcpp geometry_msgs nav_msgs std_msgs)
 
 # ROS adapter that converts /cmd_vel_nominal into the actual /cmd_vel while
 # applying and logging one simulation-time command fault.
@@ -74,8 +89,8 @@ ament_target_dependencies(command_disturbance_injector rclcpp geometry_msgs)
 add_executable(trajectory_evaluator_node src/trajectory_evaluator_node.cpp)
 target_include_directories(trajectory_evaluator_node PUBLIC include)
 target_compile_features(trajectory_evaluator_node PUBLIC cxx_std_17)
-target_link_libraries(trajectory_evaluator_node path_reference_manager)
-ament_target_dependencies(trajectory_evaluator_node rclcpp nav_msgs)
+target_link_libraries(trajectory_evaluator_node trajectory_reference_manager)
+ament_target_dependencies(trajectory_evaluator_node rclcpp nav_msgs std_msgs)
 
 if(BUILD_TESTING)
   # Geometry tests run without ROS or Gazebo and protect the common definitions
@@ -85,12 +100,28 @@ if(BUILD_TESTING)
   target_include_directories(test_path_reference_manager PUBLIC include)
   target_compile_features(test_path_reference_manager PUBLIC cxx_std_17)
 
+  # Freeze time parameterization, body-frame pose errors, and independence of
+  # the virtual reference from actual robot progress.
+  ament_add_gtest(
+    test_trajectory_reference_manager test/test_trajectory_reference_manager.cpp)
+  target_link_libraries(
+    test_trajectory_reference_manager trajectory_reference_manager)
+  target_include_directories(test_trajectory_reference_manager PUBLIC include)
+  target_compile_features(test_trajectory_reference_manager PUBLIC cxx_std_17)
+
   # These tests directly verify the cascaded control law, including the case
   # where a robot is rotated while still geometrically on the path.
   ament_add_gtest(test_cascaded_pid_controller test/test_cascaded_pid_controller.cpp)
   target_link_libraries(test_cascaded_pid_controller cascaded_pid_controller)
   target_include_directories(test_cascaded_pid_controller PUBLIC include)
   target_compile_features(test_cascaded_pid_controller PUBLIC cxx_std_17)
+
+  # Freeze the controller-independent speed, feedforward, safety, and command
+  # limits that must be reused for the PID/LQR/MPC comparison.
+  ament_add_gtest(test_motion_command_policy test/test_motion_command_policy.cpp)
+  target_link_libraries(test_motion_command_policy motion_command_policy)
+  target_include_directories(test_motion_command_policy PUBLIC include)
+  target_compile_features(test_motion_command_policy PUBLIC cxx_std_17)
 
   # Boundary, bias, and saturation tests freeze the exact fault supplied to all
   # controller families in the final comparison.
@@ -107,7 +138,9 @@ install(TARGETS
   command_disturbance_injector
   trajectory_evaluator_node
   path_reference_manager
+  trajectory_reference_manager
   pid_controller
+  motion_command_policy
   cascaded_pid_controller
   command_disturbance
   ARCHIVE DESTINATION lib
@@ -143,7 +176,9 @@ install(FILES
 ament_export_include_directories(include)
 ament_export_libraries(
   path_reference_manager
+  trajectory_reference_manager
   pid_controller
+  motion_command_policy
   cascaded_pid_controller
   command_disturbance)
 ament_package()

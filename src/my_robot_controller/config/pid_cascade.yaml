@@ -1,17 +1,20 @@
 # Main PID architecture proposed for the PID/LQR/MPC thesis comparison.
 #
-# The outer loop converts signed cross-track error [m] into a limited heading
-# correction [rad]. The inner loop converts the resulting heading error [rad]
-# into angular-velocity feedback [rad/s]. Curvature yaw rate is supplied as
-# feedforward by the common path-reference manager.
+# A time-indexed virtual robot supplies pose plus linear/angular feedforward.
+# The PID regulates body-frame longitudinal, lateral, and heading errors and
+# returns both linear- and angular-velocity corrections.
 pid_node:
   ros__parameters:
     use_sim_time: true
     controller_mode: cascade
 
-    # Outer lateral-position loop. Positive cross-track error means that the
-    # robot is left of the oriented path; the implementation applies the
-    # negative of this PID output so the desired heading points back right.
+    # Longitudinal loop: e_x [m] -> delta_v [m/s].
+    cascade_longitudinal_kp: 0.8
+    cascade_longitudinal_ki: 0.05
+    cascade_longitudinal_kd: 0.05
+    cascade_longitudinal_integral_limit: 0.5
+
+    # Outer lateral loop: body-frame e_y [m] -> heading correction [rad].
     cascade_cross_track_kp: 1.5
     cascade_cross_track_ki: 0.0
     cascade_cross_track_kd: 0.20
@@ -23,23 +26,35 @@ pid_node:
     cascade_heading_kd: 0.20
     cascade_heading_integral_limit: 0.5
 
-    # Prevent the outer loop from asking for more than about 40 degrees of
-    # heading correction. Slow forward motion as lateral displacement grows.
+    # Prevent the outer loop from asking for more than about 40 degrees.
     cascade_max_heading_correction: 0.7
-    cascade_cross_track_speed_gain: 1.5
 
     # Common reference-speed policy shared with future LQR and MPC controllers.
     search_window: 20
     reference_linear_velocity: 0.4
     curvature_speed_gain: 0.5
-    endpoint_slowdown_distance: 0.5
+    # The temporal profiler handles the final stop through the deceleration
+    # bound; no second geometric slowdown is applied.
+    endpoint_slowdown_distance: 0.0
     maximum_reference_curvature: 5.0
+    trajectory_spatial_step: 0.01
+    maximum_reference_linear_acceleration: 0.5
+    # Conservative braking is deliberate: Gazebo Classic ENCODER odometry
+    # loses the sign of reverse velocity, so the reference must stop without
+    # requiring a reverse terminal correction.
+    maximum_reference_linear_deceleration: 0.1
 
     # Timing, terminal condition, actuator limits, and watchdog safety.
     nominal_control_frequency: 30.0
     max_control_dt: 0.2
     goal_tolerance: 0.08
+    goal_heading_tolerance: 0.15
+    # Forward-only interval [0, max], shared by PID, LQR, and MPC.
     max_linear_velocity: 1.0
     max_angular_velocity: 1.5
+    # Controller-independent emergency guard. Ordinary errors do not reduce
+    # speed; translation stops only beyond these gross-deviation thresholds.
+    translation_stop_lateral_error: 0.75
+    translation_stop_heading_error: 1.2
     odom_timeout: 2.0
     startup_settling_time: 1.0

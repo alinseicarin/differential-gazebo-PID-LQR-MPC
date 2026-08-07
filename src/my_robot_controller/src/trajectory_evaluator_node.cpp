@@ -11,8 +11,9 @@
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float64.hpp"
 
-#include "my_robot_controller/path_reference_manager.hpp"
+#include "my_robot_controller/trajectory_reference_manager.hpp"
 
 namespace
 {
@@ -50,6 +51,14 @@ public:
     declare_parameter<std::string>("csv_path", "");
     declare_parameter<std::string>("output_csv_path", "ground_truth_trajectory.csv");
     declare_parameter<int>("search_window", 20);
+    declare_parameter<double>("reference_linear_velocity", 0.4);
+    declare_parameter<double>("curvature_speed_gain", 0.5);
+    declare_parameter<double>("endpoint_slowdown_distance", 0.0);
+    declare_parameter<double>("maximum_reference_curvature", 5.0);
+    declare_parameter<double>("trajectory_spatial_step", 0.01);
+    declare_parameter<double>("maximum_reference_linear_acceleration", 0.5);
+    declare_parameter<double>("maximum_reference_linear_deceleration", 0.5);
+    declare_parameter<double>("maximum_reference_angular_velocity", 1.5);
 
     const std::string path_file = get_parameter("csv_path").as_string();
     const std::string output_file = get_parameter("output_csv_path").as_string();
@@ -64,8 +73,23 @@ public:
       throw std::runtime_error("Evaluator search_window must be positive");
     }
 
-    my_robot_controller::PathReferenceConfig reference_config;
-    reference_config.search_window = static_cast<std::size_t>(search_window);
+    my_robot_controller::TrajectoryReferenceConfig reference_config;
+    reference_config.path.search_window = static_cast<std::size_t>(search_window);
+    reference_config.path.nominal_linear_velocity =
+      get_parameter("reference_linear_velocity").as_double();
+    reference_config.path.curvature_speed_gain =
+      get_parameter("curvature_speed_gain").as_double();
+    reference_config.path.endpoint_slowdown_distance =
+      get_parameter("endpoint_slowdown_distance").as_double();
+    reference_config.path.maximum_abs_curvature =
+      get_parameter("maximum_reference_curvature").as_double();
+    reference_config.spatial_step = get_parameter("trajectory_spatial_step").as_double();
+    reference_config.maximum_linear_acceleration =
+      get_parameter("maximum_reference_linear_acceleration").as_double();
+    reference_config.maximum_linear_deceleration =
+      get_parameter("maximum_reference_linear_deceleration").as_double();
+    reference_config.maximum_reference_angular_velocity =
+      get_parameter("maximum_reference_angular_velocity").as_double();
     reference_manager_.configure(reference_config);
     reference_manager_.load_csv(path_file);
 
@@ -76,8 +100,12 @@ public:
     output_csv_ << std::setprecision(12);
     output_csv_ <<
       "time,truth_stamp,truth_x,truth_y,truth_yaw,reference_x,reference_y,"
-      "reference_yaw,true_cross_track_error,true_heading_error,path_progress,"
-      "remaining_path_length,filtered_stamp,filtered_age,estimated_x,estimated_y,"
+      "reference_yaw,reference_linear_velocity,reference_angular_velocity,"
+      "true_longitudinal_error,true_lateral_error,true_trajectory_heading_error,"
+      "true_position_error,projection_x,projection_y,projection_yaw,"
+      "true_cross_track_error,true_path_heading_error,reference_progress,"
+      "projection_progress,remaining_path_length,filtered_stamp,filtered_age,"
+      "estimated_x,estimated_y,"
       "estimated_yaw,aligned_truth_x,aligned_truth_y,aligned_truth_yaw,"
       "localization_position_error,localization_heading_error,"
       "truth_linear_velocity,truth_angular_velocity\n";
@@ -88,10 +116,16 @@ public:
     truth_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
       "ground_truth/odom", 10,
       std::bind(&TrajectoryEvaluatorNode::truth_callback, this, std::placeholders::_1));
+    experiment_start_subscriber_ = create_subscription<std_msgs::msg::Float64>(
+      "experiment_start_time", rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(
+        &TrajectoryEvaluatorNode::experiment_start_callback, this,
+        std::placeholders::_1));
 
     RCLCPP_INFO(
-      get_logger(), "Ground-truth evaluator loaded %zu waypoints and writes to %s",
-      reference_manager_.waypoint_count(), output_file.c_str());
+      get_logger(),
+      "Ground-truth evaluator loaded %zu waypoints (%.3f s reference) and writes to %s",
+      reference_manager_.waypoint_count(), reference_manager_.duration(), output_file.c_str());
   }
 
   ~TrajectoryEvaluatorNode() override
@@ -103,6 +137,20 @@ public:
   }
 
 private:
+  void experiment_start_callback(const std_msgs::msg::Float64::SharedPtr message)
+  {
+    if (!std::isfinite(message->data)) {
+      RCLCPP_WARN(get_logger(), "Ignoring non-finite experiment start timestamp");
+      return;
+    }
+    experiment_start_stamp_ = message->data;
+    experiment_started_ = true;
+    reference_manager_.reset_projection();
+    RCLCPP_INFO(
+      get_logger(), "Ground-truth trajectory evaluation starts at %.6f s",
+      experiment_start_stamp_);
+  }
+
   bool interpolate_truth_at(double stamp, PlanarPoseSample & result) const
   {
     if (truth_history_.size() < 2u || stamp < truth_history_.front().stamp ||
@@ -153,9 +201,7 @@ private:
       return;
     }
     const double stamp = rclcpp::Time(message->header.stamp).seconds();
-    if (!truth_received_) {
-      first_truth_stamp_ = stamp;
-    } else if (stamp <= previous_truth_stamp_) {
+    if (truth_received_ && stamp <= previous_truth_stamp_) {
       RCLCPP_WARN(get_logger(), "Ignoring non-increasing ground-truth timestamp");
       return;
     }
@@ -178,7 +224,15 @@ private:
     while (truth_history_.size() > 600u) {
       truth_history_.pop_front();
     }
-    const auto reference = reference_manager_.update(truth_x, truth_y, truth_yaw);
+
+    // Before the controller announces its synchronized start, truth samples are
+    // retained only for timestamp-aligned localization evaluation.
+    if (!experiment_started_ || stamp < experiment_start_stamp_) {
+      return;
+    }
+    const double elapsed_time = stamp - experiment_start_stamp_;
+    const auto reference = reference_manager_.update(
+      elapsed_time, truth_x, truth_y, truth_yaw);
 
     const double missing = std::numeric_limits<double>::quiet_NaN();
     double filtered_age = missing;
@@ -198,12 +252,21 @@ private:
       }
     }
 
-    output_csv_ << stamp - first_truth_stamp_ << ',' << stamp << ',' <<
+    output_csv_ << elapsed_time << ',' << stamp << ',' <<
       truth_x << ',' << truth_y << ',' << truth_yaw << ',' <<
-      reference.path.position.x << ',' << reference.path.position.y << ',' <<
-      reference.path.heading << ',' << reference.cross_track_error << ',' <<
-      reference.heading_error << ',' << reference.path.progress << ',' <<
-      reference.path.remaining_length << ',' <<
+      reference.trajectory.position.x << ',' << reference.trajectory.position.y << ',' <<
+      reference.trajectory.heading << ',' <<
+      reference.trajectory.reference_linear_velocity << ',' <<
+      reference.trajectory.reference_angular_velocity << ',' <<
+      reference.longitudinal_error << ',' << reference.lateral_error << ',' <<
+      reference.heading_error << ',' << reference.position_error << ',' <<
+      reference.projection.path.position.x << ',' <<
+      reference.projection.path.position.y << ',' <<
+      reference.projection.path.heading << ',' <<
+      reference.projection.cross_track_error << ',' <<
+      reference.projection.heading_error << ',' <<
+      reference.trajectory.progress << ',' << reference.projection.path.progress << ',' <<
+      reference.projection.path.remaining_length << ',' <<
       (filtered_received_ ? filtered_stamp_ : missing) << ',' << filtered_age << ',' <<
       (filtered_received_ ? estimated_x_ : missing) << ',' <<
       (filtered_received_ ? estimated_y_ : missing) << ',' <<
@@ -218,20 +281,22 @@ private:
     }
   }
 
-  my_robot_controller::PathReferenceManager reference_manager_;
+  my_robot_controller::TrajectoryReferenceManager reference_manager_;
   std::ofstream output_csv_;
   std::deque<PlanarPoseSample> truth_history_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr filtered_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr truth_subscriber_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr experiment_start_subscriber_;
 
-  double first_truth_stamp_{0.0};
   double previous_truth_stamp_{0.0};
+  double experiment_start_stamp_{0.0};
   double filtered_stamp_{0.0};
   double estimated_x_{0.0};
   double estimated_y_{0.0};
   double estimated_yaw_{0.0};
   bool truth_received_{false};
   bool filtered_received_{false};
+  bool experiment_started_{false};
   std::size_t sample_count_{0u};
 };
 

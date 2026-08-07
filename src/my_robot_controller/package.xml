@@ -16,6 +16,7 @@
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
 
   <!-- Python launch dependencies are needed at runtime, not during C++ build. -->
   <exec_depend>launch</exec_depend>

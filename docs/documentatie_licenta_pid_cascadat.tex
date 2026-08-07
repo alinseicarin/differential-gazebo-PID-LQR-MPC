@@ -365,39 +365,43 @@ Eroarea buclei interioare este:
   e_{\psi,c}=\wrap(\psi_d-\psi).
 \end{equation}
 
-Comanda unghiulară combină anticiparea dată de curbura căii cu reacția PID:
+Ieșirea specifică regulatorului este numai corecția vitezei unghiulare:
 
 \begin{equation}
-  \omega_{\mathrm{cmd}}=
-  \sat_{[-\omega_{\max},\omega_{\max}]}
-  \left(\omega_{\mathrm{ref}}+
+  \Delta\omega_{\mathrm{PID}}=
   K_{p,\psi}e_{\psi,c}+K_{i,\psi}\int e_{\psi,c}\,dt+
-  K_{d,\psi}\frac{de_{\psi,c}}{dt}\right).
+  K_{d,\psi}\frac{de_{\psi,c}}{dt}.
 \end{equation}
 
-Termenul $\omega_{\mathrm{ref}}=v_{\mathrm{ref}}\kappa_{\mathrm{ref}}$ asigură
-comanda nominală necesară curbei. PID-ul interior corectează abaterea de la
-modelul ideal, perturbațiile și erorile de estimare.
+Anticiparea curburii și saturația nu mai fac parte din clasa PID, ci dintr-o
+politică de comandă reutilizabilă de PID, LQR și MPC. Această separare asigură
+că fiecare regulator va produce aceeași mărime manipulată,
+$\Delta\omega$, în aceleași condiții experimentale.
 
 Un avantaj important al structurii este reacția imediată la o rotație externă.
 Dacă robotul este rotit în timp ce $e_y=0$, bucla exterioară cere încă
 $\Delta\psi_c=0$, dar $e_{\psi,c}$ se modifică instantaneu. Bucla interioară
 produce imediat o comandă unghiulară, fără să aștepte apariția abaterii laterale.
 
-\subsection{Legea vitezei liniare}
+\subsection{Politica de comandă comună}
 
-Viteza liniară folosește referința comună și doi factori de siguranță:
+În regim normal, viteza liniară este determinată exclusiv de geometria căii și
+de distanța rămasă, independent de regulator:
 
 \begin{align}
-  f_\psi &= \max(0,\cos e_{\psi,c}), \\
-  f_y &= \frac{1}{1+k_v|e_y|}, \\
-  v_{\mathrm{cmd}} &= \sat_{[0,v_{\max}]}
-  \left(v_{\mathrm{ref}} f_\psi f_y\right).
+  v_{\mathrm{cmd}} &= \sat_{[0,v_{\max}]}(v_{\mathrm{ref}}), \\
+  \omega_{\mathrm{ff}} &= \kappa_{\mathrm{ref}}v_{\mathrm{cmd}}, \\
+  \omega_{\mathrm{cmd}} &=
+  \sat_{[-\omega_{\max},\omega_{\max}]}
+  (\omega_{\mathrm{ff}}+\Delta\omega).
 \end{align}
 
-Astfel, robotul încetinește când este orientat greșit sau când abaterea laterală
-este mare. Pentru $|e_{\psi,c}|\geq\pi/2$, factorul $f_\psi$ devine zero, iar
-robotul se rotește pe loc. Nu se comandă deplasare în marșarier.
+Reducerea continuă a vitezei în funcție de eroarea PID a fost eliminată. În
+forma anterioară, un regulator cu erori mai mari era ajutat implicit printr-o
+viteză mai mică, ceea ce ar fi alterat comparația. Se păstrează doar o protecție
+comună: translația este oprită dacă $|e_y|\geq\SI{0.75}{m}$ sau dacă
+$|e_\psi|\geq\SI{1.2}{rad}$. Corecția unghiulară rămâne activă pentru
+recuperare, iar anticiparea devine zero deoarece $v_{\mathrm{cmd}}=0$.
 
 \subsection{Parametrii profilului reglat}
 
@@ -424,7 +428,6 @@ optimizări globale.
     $K_{i,\psi}$ & $0$ & $0$ & acțiune integrală unghiulară \\
     $K_{d,\psi}$ & $0{,}15$ & $0{,}20$ & amortizarea erorii unghiulare \\
     $\Delta\psi_{\max}$ & $0{,}7$ & $0{,}7$ & limita corecției [rad] \\
-    $k_v$ & $1{,}5$ & $1{,}5$ & reducerea vitezei [m$^{-1}$] \\
     $v_{\max}$ & $1{,}0$ & $1{,}0$ & limita liniară [m/s] \\
     $\omega_{\max}$ & $1{,}5$ & $1{,}5$ & limita unghiulară [rad/s] \\
     \bottomrule
@@ -433,7 +436,7 @@ optimizări globale.
 
 Deoarece $K_{i,y}=K_{i,\psi}=0$, profilul final se comportă efectiv ca două
 regulatoare PD în cascadă, completate de anticiparea curburii și de legea
-neliniară a vitezei. Implementarea păstrează forma PID generală pentru a permite
+comună a comenzilor. Implementarea păstrează forma PID generală pentru a permite
 introducerea ulterioară a acțiunii integrale, însă lucrarea trebuie să raporteze
 valorile efectiv utilizate și să nu atribuie integralelor un efect inexistent.
 
@@ -444,7 +447,9 @@ valorile efectiv utilizate și să nu atribuie integralelor un efect inexistent.
 Detaliile software nu reprezintă obiectul principal al lucrării, însă două
 decizii sunt necesare pentru validitatea comparației. În primul rând, calculul
 proiecției, al erorilor, al curburii și al referințelor de viteză este comun
-regulatoarelor PID, LQR și MPC. În al doilea rând, câștigurile și condițiile
+regulatoarelor PID, LQR și MPC. Tot într-un strat comun sunt aplicate viteza
+liniară, anticiparea curburii, protecția la abateri mari și saturațiile; fiecare
+regulator furnizează numai corecția unghiulară. În al doilea rând, câștigurile și condițiile
 experimentale sunt păstrate în configurații independente de cod. Astfel,
 schimbarea regulatorului nu modifică definiția problemei evaluate.
 
@@ -516,9 +521,9 @@ Procedura aplicată a fost:
   \item repetarea probei de perturbație cu profilul final.
 \end{enumerate}
 
-Nu au fost modificate simultan viteza de referință, legea de încetinire și
-câștigurile PID. Menținerea lor constante izolează efectul reglării feedback și
-face interpretarea rezultatelor mai clară.
+În timpul reglării nu au fost modificate simultan viteza de referință și
+câștigurile PID. Pentru comparația finală, politica de viteză și limitele sunt
+înghețate în componenta comună, izolând efectul legii de feedback.
 
 \section{Indicatorii de performanță}
 
@@ -600,16 +605,13 @@ numai mărimile necesare definirii și reproducerii indicatorilor.
 \chapter{Rezultatele reglării și validării PID}
 % =============================================================================
 
-Valorile de reglare prezentate în continuare au fost obținute înaintea separării
-complete dintre starea de reacție și starea exactă de evaluare și sunt păstrate
-ca rezultate preliminare ale alegerii câștigurilor. Matricea formală de
-benchmark va fi repetată, iar tabelele finale vor folosi erorile calculate din
-\texttt{/ground\_truth/odom}. O probă de integrare pe dreapta de \SI{5}{m} a
-confirmat funcționarea noii arhitecturi: eroarea finală raportată de EKF a fost
-\SI{0.079}{m}, eroarea finală fizică a fost \SI{0.046}{m}, iar eroarea de
-localizare aliniată temporal a fost \SI{0.020}{m} RMS și \SI{0.026}{m} maxim.
-Aceste valori verifică separarea fluxurilor, dar nu înlocuiesc repetarea
-benchmark-ului complet.
+Tabelele de selectare a câștigurilor au fost obținute în etapa de punere în
+funcțiune, înainte de separarea completă a politicii de viteză. Ele documentează
+alegerea valorilor PID, dar nu sunt folosite drept comparație finală cu LQR și
+MPC. După introducerea politicii comune, validarea nominală și proba de
+perturbație au fost repetate cu evaluare din \texttt{/ground\_truth/odom}.
+Rezultatele de mai jos provin din câte o rulare de verificare; matricea formală
+va include repetări și indicatori de dispersie.
 
 \section{Selectarea buclei interioare}
 
@@ -662,57 +664,53 @@ $K_{d,y}=0{,}20$.
 
 \section{Validarea profilului final pe traseele nominale}
 
-Tabelul~\ref{tab:cascade-results} prezintă rularea de validare a profilului
-final. Toate traseele au fost finalizate. Eroarea finală apropiată de
+Tabelul~\ref{tab:cascade-results} prezintă rularea de validare de după separarea
+politicii comune. Toate traseele au fost finalizate. Eroarea estimată finală apropiată de
 \SI{0.08}{m} este determinată în principal de toleranța de oprire
 $\SI{0.08}{m}$ și nu trebuie confundată cu eroarea laterală staționară.
 
 \begin{table}[htbp]
   \centering
   \small
-  \caption{Validarea profilului PID cascadat final}
+  \caption{Validarea PID după introducerea politicii comune; erori fizice Gazebo}
   \label{tab:cascade-results}
   \begin{tabular}{lrrrrrr}
     \toprule
     Traseu & Succes & $T$ [s] & RMS $e_y$ [m] & max $|e_y|$ [m]
       & RMS $e_\psi$ [rad] & $J_u$ \\
     \midrule
-    Dreaptă & da & 13,601 & 0,00002 & 0,00003 & 0,00004 & 1,909 \\
-    Curbă sinusoidală & da & 20,291 & 0,01888 & 0,06398 & 0,10582 & 2,251 \\
-    Colț & da & 17,800 & 0,03559 & 0,11493 & 0,30215 & 2,847 \\
-    Cerc & da & 25,008 & 0,00682 & 0,00908 & 0,01867 & 1,898 \\
-    Opt & da & 40,701 & 0,00616 & 0,01102 & 0,02515 & 2,988 \\
+    Dreaptă & da & 13,300 & 0,00176 & 0,00251 & 0,00052 & 1,961 \\
+    Curbă sinusoidală & da & 19,670 & 0,02169 & 0,10750 & 0,18127 & 4,446 \\
+    Colț & da & 18,200 & 0,08594 & 0,25460 & 0,40742 & 5,757 \\
+    Cerc & da & 24,798 & 0,00664 & 0,01802 & 0,06785 & 3,202 \\
+    Opt & da & 40,300 & 0,03342 & 0,09056 & 0,11372 & 6,867 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Față de rularea profilului inițial, RMS-ul erorii laterale s-a redus cu
-aproximativ $21\%$ pe curba sinusoidală, $2\%$ la colț, $25\%$ pe cerc și
-$41\%$ pe traseul în formă de opt. Efortul de control a rămas practic neschimbat
-la colț și a crescut cu aproximativ $2$--$4\%$ pe traseele curbe. Rezultă un
-compromis favorabil pentru obiectivul prioritar de urmărire, fără degradarea
-duratei de parcurgere. Colțul rămâne cazul cu cea mai mare eroare deoarece
+Rezultatele nu se compară numeric cu vechea arhitectură, deoarece aceasta reducea
+viteza în funcție de eroarea PID. Colțul rămâne cazul cu cea mai mare eroare deoarece
 referința poligonală impune o variație instantanee de aproximativ $90^\circ$,
 imposibil de urmărit instantaneu de un sistem cu viteză și accelerație limitate.
+Protecția comună a oprit translația timp de 29 de eșantioane în vecinătatea
+colțului, fără a împiedica finalizarea. Pe celelalte trasee nu a fost activată.
 
 \section{Rejecția perturbației de comandă}
 
-Tabelul~\ref{tab:disturbance-results} compară proba efectuată cu reglajul
-inițial și repetarea ei după reglare. Profilul final a redus abaterea laterală
-maximă cu aproximativ $21\%$, eroarea maximă de orientare cu aproximativ
-$18\%$ și timpul de revenire strictă cu aproximativ $29\%$.
+Tabelul~\ref{tab:disturbance-results} prezintă repetarea probei după separarea
+politicii comune de comandă.
 
 \begin{table}[htbp]
   \centering
   \caption{Răspunsul la polarizarea unghiulară de \SI{0.6}{rad/s}, aplicată
   timp de \SI{1}{s}}
   \label{tab:disturbance-results}
-  \begin{tabular}{lrrr}
+  \begin{tabular}{lrrrr}
     \toprule
-    Profil & max $|e_y|$ [m] & max $|e_\psi|$ [rad] & revenire [s] \\
+    Profil & max $|e_y|$ [m] & max $|e_\psi|$ [rad] & revenire [s]
+      & $|e_y|$ final [m] \\
     \midrule
-    Inițial & 0,06667 & 0,18243 & 6,194 \\
-    Final & 0,05296 & 0,15004 & 4,404 \\
+    PID cu politică comună & 0,05729 & 0,13870 & 4,361 & 0,00312 \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -720,8 +718,7 @@ $18\%$ și timpul de revenire strictă cu aproximativ $29\%$.
 Rezultatul confirmă funcționarea ambelor niveluri ale cascadei. Polarizarea
 produce inițial o eroare de orientare, la care bucla interioară reacționează
 direct. Deplasarea laterală rezultată modifică apoi orientarea dorită prin bucla
-exterioară. Reducerea simultană a vârfurilor și a timpului de revenire susține
-alegerea câștigurilor finale. Totuși, valorile provin din câte o rulare și au rol
+exterioară. Totuși, valorile provin dintr-o singură rulare și au rol
 de validare a reglajului; concluziile comparative finale necesită repetări și
 raportarea dispersiei.
 
@@ -821,9 +818,9 @@ fi inutilă în general.
 
 Înaintea experimentelor, definițiile geometrice, semnele cascadei, reacția la o
 rotație fără abatere laterală, feedforward-ul de curbură, saturațiile și
-frontierele temporale ale perturbației au fost verificate automat. Cele 13 ținte
+frontierele temporale ale perturbației au fost verificate automat. Cele 14 ținte
 CTest ale celor două pachete se încheie fără erori sau eșecuri. Instrumentul
-ROS omite 15 verificări statice cppcheck deoarece versiunea instalată este
+ROS omite 18 verificări statice cppcheck deoarece versiunea instalată este
 marcată drept lentă; testele geometrice și de control sunt executate. Acest rezultat
 este menționat ca verificare a corectitudinii experimentului, fără a detalia în
 teză fiecare funcție sau caz software.
@@ -843,6 +840,8 @@ Până la această etapă au fost realizate:
   \item trasee dreaptă, sinusoidală, colț, cerc și opt;
   \item script de benchmark și indicatori calculați automat;
   \item manager comun de referință cu proiecție și progres continuu;
+  \item politică comună de viteză, anticipare, siguranță și saturație pentru
+        PID, LQR și MPC;
   \item implementarea și testarea PID-ului cascadat;
   \item reglarea secvențială și înghețarea câștigurilor profilului PID;
   \item validarea pe cinci trasee și două condiții inițiale izolate;
@@ -890,7 +889,9 @@ din implementarea descrisă aici.
   \path{src/my_robot_controller/src/pid_controller.cpp} &
   PID discret generic și anti-windup; \\
   \path{src/my_robot_controller/src/cascaded_pid_controller.cpp} &
-  legea de control cascadată; \\
+  legea de feedback PID cascadată; \\
+  \path{src/my_robot_controller/src/motion_command_policy.cpp} &
+  viteza, anticiparea curburii, protecția și limitele comune regulatoarelor; \\
   \path{src/my_robot_controller/src/pid_node.cpp} &
   integrarea ROS, selectarea modului și jurnalizarea; \\
   \path{src/my_robot_controller/config/pid_cascade.yaml} &
@@ -903,6 +904,10 @@ din implementarea descrisă aici.
   validarea profilului final pe trasee și condiții inițiale; \\
   \path{results/cascade_command_disturbance_final_20260720/recovery_summary.txt} &
   rezultatul final al probei de perturbație; \\
+  \path{results/shared_motion_policy_nominal_20260807/ground_truth_summary.csv} &
+  verificarea nominală după separarea politicii comune; \\
+  \path{results/shared_motion_policy_disturbance_20260807/recovery_summary.txt} &
+  proba de perturbație după separarea politicii comune; \\
   \path{results/cascade_constant_bias_diagnostic_20260720/steady_state_summary.txt} &
   verificarea regimului staționar fără acțiune integrală; \\
   \path{results/integral_gain_study_20260720.csv} &
