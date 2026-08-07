@@ -86,7 +86,7 @@ private:
   // The thesis controller uses an outer cross-track loop and inner heading
   // loop, both contained in a ROS-independent, unit-tested component.
   my_robot_controller::CascadedPidController cascaded_pid_;
-  ControllerMode controller_mode_{ControllerMode::kLookahead};
+  ControllerMode controller_mode_{ControllerMode::kCascade};
 
   // ROS communication objects. The watchdog timer is not the control timer.
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_publisher_;
@@ -112,9 +112,17 @@ private:
   double max_linear_velocity_{1.0};
   double max_angular_velocity_{1.5};
   double odom_timeout_{2.0};
+  double startup_settling_time_{1.0};
 
   // Lifecycle/safety flags and the wall-clock time of the latest odometry.
   bool odom_received_{false};
+  // Experiment time starts only after DDS has matched the command publisher to
+  // the downstream Gazebo command path. This prevents startup discovery delay
+  // from being counted as controller response time.
+  bool command_transport_connected_{false};
+  bool command_path_ready_{false};
+  bool waiting_for_command_path_logged_{false};
+  double command_connection_stamp_seconds_{0.0};
   bool track_complete_{false};
   bool stop_sent_{false};
   std::chrono::steady_clock::time_point last_odom_wall_time_;

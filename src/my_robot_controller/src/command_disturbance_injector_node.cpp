@@ -61,15 +61,18 @@ public:
     command_csv_ << std::setprecision(10);
     command_csv_ <<
       "time,nominal_linear_command,nominal_angular_command,applied_linear_command,"
-      "applied_angular_command,fault_active\n";
+      "applied_angular_command,fault_active,stamp\n";
 
     applied_command_publisher_ =
       create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
-    nominal_command_subscriber_ = create_subscription<geometry_msgs::msg::Twist>(
-      "cmd_vel_nominal", 10,
-      std::bind(
-        &CommandDisturbanceInjectorNode::command_callback, this,
-        std::placeholders::_1));
+
+    // Do not expose the upstream subscription until this output publisher is
+    // matched to Gazebo. The PID waits for its own subscriber, so delaying this
+    // subscription creates a transitive readiness handshake across the entire
+    // PID -> injector -> Gazebo command path.
+    readiness_timer_ = create_wall_timer(
+      std::chrono::milliseconds(50),
+      std::bind(&CommandDisturbanceInjectorNode::readiness_callback, this));
 
     last_input_wall_time_ = std::chrono::steady_clock::now();
     watchdog_timer_ = create_wall_timer(
@@ -99,6 +102,24 @@ public:
   }
 
 private:
+  void readiness_callback()
+  {
+    if (nominal_command_subscriber_ ||
+      applied_command_publisher_->get_subscription_count() == 0u)
+    {
+      return;
+    }
+
+    nominal_command_subscriber_ = create_subscription<geometry_msgs::msg::Twist>(
+      "cmd_vel_nominal", 10,
+      std::bind(
+        &CommandDisturbanceInjectorNode::command_callback, this,
+        std::placeholders::_1));
+    readiness_timer_->cancel();
+    RCLCPP_INFO(
+      get_logger(), "Gazebo command subscriber connected; accepting nominal commands");
+  }
+
   void command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
   {
     const double stamp_seconds = now().seconds();
@@ -128,7 +149,8 @@ private:
     command_csv_ <<
       elapsed_time << ',' << output.nominal_linear_velocity << ',' <<
       output.nominal_angular_velocity << ',' << output.applied_linear_velocity << ',' <<
-      output.applied_angular_velocity << ',' << (output.fault_active ? 1 : 0) << '\n';
+      output.applied_angular_velocity << ',' << (output.fault_active ? 1 : 0) << ',' <<
+      stamp_seconds << '\n';
 
     if (output.fault_active != previous_fault_active_) {
       if (output.fault_active) {
@@ -176,6 +198,7 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr applied_command_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr nominal_command_subscriber_;
+  rclcpp::TimerBase::SharedPtr readiness_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
 
   double input_timeout_{2.0};

@@ -69,6 +69,14 @@ target_compile_features(command_disturbance_injector PUBLIC cxx_std_17)
 target_link_libraries(command_disturbance_injector command_disturbance)
 ament_target_dependencies(command_disturbance_injector rclcpp geometry_msgs)
 
+# Independent evaluator: controllers consume only EKF state, while this node
+# compares the estimate and physical trajectory against Gazebo world truth.
+add_executable(trajectory_evaluator_node src/trajectory_evaluator_node.cpp)
+target_include_directories(trajectory_evaluator_node PUBLIC include)
+target_compile_features(trajectory_evaluator_node PUBLIC cxx_std_17)
+target_link_libraries(trajectory_evaluator_node path_reference_manager)
+ament_target_dependencies(trajectory_evaluator_node rclcpp nav_msgs)
+
 if(BUILD_TESTING)
   # Geometry tests run without ROS or Gazebo and protect the common definitions
   # used in every later controller comparison.
@@ -90,12 +98,14 @@ if(BUILD_TESTING)
   target_link_libraries(test_command_disturbance command_disturbance)
   target_include_directories(test_command_disturbance PUBLIC include)
   target_compile_features(test_command_disturbance PUBLIC cxx_std_17)
+
 endif()
 
 # ROS 2 discovers executables installed under lib/<package-name>.
 install(TARGETS
   pid_node
   command_disturbance_injector
+  trajectory_evaluator_node
   path_reference_manager
   pid_controller
   cascaded_pid_controller
@@ -113,6 +123,7 @@ install(DIRECTORY
   config
   launch
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
 )
 
 # Copy the workspace-level benchmark tracks into the installed package. The PID

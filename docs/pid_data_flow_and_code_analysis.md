@@ -14,7 +14,7 @@ This document explains, in deliberately detailed and beginner-friendly terms, ho
 
 The main subject is the cascaded PID mode selected by `pid_cascade.yaml`. The older lookahead controller is also described where it shares code or helps explain the architecture. LQR and MPC are not implemented yet, but several current components were intentionally designed so those controllers can reuse exactly the same path interpretation and benchmark infrastructure.
 
-The current controller is a **spatial path-following controller**, not yet a strict time-indexed trajectory tracker. It tries to keep the robot on a geometric curve and supplies a reference speed based on curvature and distance from the endpoint. It does not currently require the robot to be at a particular path coordinate at a prescribed absolute time.
+The controller is intentionally a **spatial path-tracking controller**, not a strict time-indexed trajectory tracker. It keeps the robot on a geometric curve and supplies a reference speed based on curvature and distance from the endpoint. The robot is not required to occupy a particular path coordinate at a prescribed absolute time; completion time is instead an evaluated performance result.
 
 ---
 
@@ -1447,7 +1447,7 @@ These values describe this controller, path, disturbance, model, estimator, and 
 
 ### 29.1 Path following, not strict timed tracking
 
-The current reference is indexed by nearest monotonic path progress, not by a desired time schedule. The project can still evaluate path-following quality, speed, effort, and disturbance recovery. If the final thesis requires time-trajectory tracking, a later reference layer must supply desired state versus time, including at least `x_ref(t)`, `y_ref(t)`, heading, and usually velocity.
+The reference is indexed by nearest monotonic path progress, not by a desired time schedule. This is a deliberate thesis-scope decision. The comparison evaluates path-tracking quality, completion time, command activity, and disturbance recovery without introducing a time-parameterized reference layer.
 
 ### 29.2 Piecewise-linear path
 
@@ -1487,7 +1487,13 @@ The PID CSV contains nominal commands. For a disturbance experiment, physical in
 
 ### 29.9 The state estimate is part of the evaluated system
 
-The controller acts on EKF output, not perfect Gazebo ground truth. Therefore observed tracking includes estimator delay/noise. That is realistic, but the thesis should state whether comparisons use filtered odometry as the measured actual trajectory or separately record Gazebo ground truth.
+The controller acts on EKF output, not perfect Gazebo ground truth. Therefore
+estimator drift and delay can change its commands and the resulting physical
+path. Formal tracking metrics are now calculated independently from
+`/ground_truth/odom`, while the controller CSV records what the controller
+believed. The evaluator also reports localization error after interpolating
+truth to the EKF message timestamp. This separation preserves realistic
+feedback without allowing the estimator to grade itself.
 
 ---
 

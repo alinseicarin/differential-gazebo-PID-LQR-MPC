@@ -3,7 +3,7 @@ Generate deterministic, headerless x,y paths for controller benchmarks.
 
 Tracks use a nominal 5 cm waypoint spacing. They deliberately contain no header
 because the C++ path loader expects exactly two numeric columns on every row.
-Running this script replaces the five track CSV files in the current directory.
+Running this script replaces all seven track CSV files in the current directory.
 """
 
 import math
@@ -89,6 +89,7 @@ for i in range(lobe_segments + 1):
     y = figure_eight_radius * (1.0 - math.cos(angle))
     track_5.append((x, y))
 
+
 # Lower lobe: origin -> lower circle -> origin. Skip i=0 because the upper lobe
 # already ended at the same crossing waypoint.
 for i in range(1, lobe_segments + 1):
@@ -96,6 +97,19 @@ for i in range(1, lobe_segments + 1):
     x = figure_eight_radius * math.sin(angle)
     y = -figure_eight_radius * (1.0 - math.cos(angle))
     track_5.append((x, y))
+
+
+# --- TRACK 6: Initial lateral offset / capture test -------------------------
+# The robot spawns at (0, 0), while this line begins 0.2 m to its left. This
+# measures convergence onto a path without changing the estimator's world/odom
+# alignment or giving the controller a privileged initial pose correction.
+track_6 = [(0.0, 0.2), (5.0, 0.2)]
+
+
+# --- TRACK 7: Initial heading mismatch / capture test -----------------------
+# The robot spawns facing +X while this 5 m line is directed at +45 degrees.
+diagonal_endpoint = 5.0 / math.sqrt(2.0)
+track_7 = [(0.0, 0.0), (diagonal_endpoint, diagonal_endpoint)]
 
 
 # Avoid rewriting data merely by importing this module from another script.
@@ -106,3 +120,5 @@ if __name__ == '__main__':
     save_to_csv('track_3_corner.csv', track_3)
     save_to_csv('track_4_circle.csv', track_4)
     save_to_csv('track_5_figure_eight.csv', track_5)
+    save_to_csv('track_6_initial_lateral_offset.csv', track_6)
+    save_to_csv('track_7_initial_heading_offset.csv', track_7)

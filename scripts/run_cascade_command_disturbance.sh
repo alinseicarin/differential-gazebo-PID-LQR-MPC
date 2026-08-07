@@ -27,6 +27,10 @@ FAULT_DURATION="${FAULT_DURATION:-1.0}"
 ANGULAR_VELOCITY_BIAS="${ANGULAR_VELOCITY_BIAS:-0.6}"
 RECOVERY_CTE_THRESHOLD="${RECOVERY_CTE_THRESHOLD:-0.005}"
 RECOVERY_HEADING_THRESHOLD="${RECOVERY_HEADING_THRESHOLD:-0.01}"
+GAZEBO_SEED="${DISTURBANCE_GAZEBO_SEED:-42}"
+SETTLING_SIM_TIME="${DISTURBANCE_SETTLING_TIME:-2.0}"
+SETTLING_LINEAR_THRESHOLD="${DISTURBANCE_SETTLING_LINEAR_THRESHOLD:-0.01}"
+SETTLING_ANGULAR_THRESHOLD="${DISTURBANCE_SETTLING_ANGULAR_THRESHOLD:-0.02}"
 
 CONFIG_PATH="${DISTURBANCE_CONFIG_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/config/pid_cascade.yaml}"
 INSTALLED_STRAIGHT="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_1_straight.csv"
@@ -34,6 +38,7 @@ TRACK_PATH="${RESULT_DIR}/track_straight_5m.csv"
 TRACK_POINT_COUNT="${DISTURBANCE_TRACK_POINTS:-101}"
 CONTROLLER_CSV="${RESULT_DIR}/cascade_controller.csv"
 APPLIED_COMMAND_CSV="${RESULT_DIR}/applied_commands.csv"
+GROUND_TRUTH_CSV="${RESULT_DIR}/ground_truth_trajectory.csv"
 SUMMARY_PATH="${RESULT_DIR}/recovery_summary.txt"
 SIM_LOG="${RESULT_DIR}/simulation.log"
 CONTROL_GRAPH_LOG="${RESULT_DIR}/controller_and_injector.log"
@@ -77,7 +82,7 @@ trap 'exit 143' TERM
 
 echo "Starting Gazebo command-disturbance test (gui=${GUI})"
 setsid ros2 launch my_robot_description display.launch.py \
-  world:=empty.world gui:="${GUI}" > "${SIM_LOG}" 2>&1 &
+  world:=empty.world gui:="${GUI}" seed:="${GAZEBO_SEED}" > "${SIM_LOG}" 2>&1 &
 ACTIVE_SIMULATION_PID=$!
 
 simulation_ready=0
@@ -104,6 +109,7 @@ setsid ros2 launch my_robot_controller pid_command_disturbance.launch.py \
   csv_path:="${TRACK_PATH}" \
   controller_output_csv_path:="${CONTROLLER_CSV}" \
   applied_command_csv_path:="${APPLIED_COMMAND_CSV}" \
+  evaluation_output_csv_path:="${GROUND_TRUTH_CSV}" \
   fault_start_delay:="${FAULT_START_DELAY}" \
   fault_duration:="${FAULT_DURATION}" \
   angular_velocity_bias:="${ANGULAR_VELOCITY_BIAS}" \
@@ -127,63 +133,114 @@ for second in $(seq 1 60); do
   sleep 1
 done
 
-sleep 1
+completion_stamp=""
+settled=0
+if [[ "${complete}" -eq 1 ]]; then
+  completion_stamp="$(sed -n \
+    's/.*Track complete at simulation time \([0-9][0-9.]*\) s.*/\1/p' \
+    "${CONTROL_GRAPH_LOG}" | tail -n 1)"
+fi
+
+if [[ -n "${completion_stamp}" ]]; then
+  settling_target="$(awk -v stamp="${completion_stamp}" \
+    -v duration="${SETTLING_SIM_TIME}" 'BEGIN {printf "%.9f", stamp + duration}')"
+  for attempt in $(seq 1 150); do
+    if [[ -s "${GROUND_TRUTH_CSV}" ]]; then
+      IFS=',' read -r truth_stamp truth_linear_velocity truth_angular_velocity < <(
+        tail -n 1 "${GROUND_TRUTH_CSV}" | awk -F, '{print $2 "," $23 "," $24}')
+      if awk \
+        -v stamp="${truth_stamp}" -v target="${settling_target}" \
+        -v linear="${truth_linear_velocity}" -v angular="${truth_angular_velocity}" \
+        -v linear_limit="${SETTLING_LINEAR_THRESHOLD}" \
+        -v angular_limit="${SETTLING_ANGULAR_THRESHOLD}" '
+        function abs(value) {return value < 0 ? -value : value}
+        BEGIN {
+          exit !(stamp >= target && abs(linear) <= linear_limit &&
+            abs(angular) <= angular_limit)
+        }'
+      then
+        settled=1
+        break
+      fi
+    fi
+    sleep 0.1
+  done
+fi
+
+if [[ "${complete}" -eq 1 && "${settled}" -ne 1 ]]; then
+  echo "Robot did not satisfy the fixed terminal settling condition"
+  complete=0
+fi
+
 stop_process_group "${ACTIVE_CONTROL_GRAPH_PID}"
 ACTIVE_CONTROL_GRAPH_PID=""
 stop_process_group "${ACTIVE_SIMULATION_PID}"
 ACTIVE_SIMULATION_PID=""
 
-if [[ ! -s "${CONTROLLER_CSV}" || ! -s "${APPLIED_COMMAND_CSV}" ]]; then
-  echo "Controller or applied-command CSV is missing"
+if [[ ! -s "${CONTROLLER_CSV}" || ! -s "${APPLIED_COMMAND_CSV}" ||
+  ! -s "${GROUND_TRUTH_CSV}" ]]
+then
+  echo "Controller, applied-command, or ground-truth CSV is missing"
   tail -n 40 "${CONTROL_GRAPH_LOG}" || true
   exit 1
 fi
 
 fault_start="$(awk -F, 'NR > 1 && $6 == 1 {print $1; exit}' "${APPLIED_COMMAND_CSV}")"
+fault_start_stamp="$(awk -F, 'NR > 1 && $6 == 1 {print $7; exit}' "${APPLIED_COMMAND_CSV}")"
 fault_end="$(awk -F, '
   NR > 1 {
     if (previous_active == 1 && $6 == 0) {print $1; exit}
     previous_active = $6
   }
 ' "${APPLIED_COMMAND_CSV}")"
+fault_end_stamp="$(awk -F, '
+  NR > 1 {
+    if (previous_active == 1 && $6 == 0) {print $7; exit}
+    previous_active = $6
+  }
+' "${APPLIED_COMMAND_CSV}")"
 
-if [[ -z "${fault_start}" || -z "${fault_end}" ]]; then
+if [[ -z "${fault_start}" || -z "${fault_end}" ||
+  -z "${fault_start_stamp}" || -z "${fault_end_stamp}" ]]
+then
   echo "The applied-command log does not contain a complete fault window"
   exit 1
 fi
 
-# Recovery requires ten consecutive controller samples with cross-track error
-# below 5 mm and path-heading error below 0.01 rad by default. It is measured
-# from the actual fault end recorded by the downstream injector.
+# Recovery requires ten consecutive ground-truth samples with cross-track error
+# below 5 mm and path-heading error below 0.01 rad by default. Absolute Gazebo
+# timestamps align the evaluator data with the actual downstream fault window.
 awk -F, \
   -v fault_start="${fault_start}" -v fault_end="${fault_end}" \
+  -v fault_start_stamp="${fault_start_stamp}" -v fault_end_stamp="${fault_end_stamp}" \
   -v complete="${complete}" \
   -v cte_threshold="${RECOVERY_CTE_THRESHOLD}" \
   -v heading_threshold="${RECOVERY_HEADING_THRESHOLD}" '
   NR == 1 {next}
   {
     time = $1
-    cte = $8
-    heading = $9
+    stamp = $2
+    cte = $9
+    heading = $10
     abs_cte = cte < 0 ? -cte : cte
     abs_heading = heading < 0 ? -heading : heading
 
-    if (time >= fault_start) {
+    if (stamp >= fault_start_stamp) {
       if (abs_cte > peak_cte) {
         peak_cte = abs_cte
-        peak_cte_time = time
+        peak_cte_stamp = stamp
         stable_count = 0
         recovery_time = ""
       }
       if (abs_heading > peak_heading) peak_heading = abs_heading
 
-      if (time >= fault_end && time >= peak_cte_time &&
+      if (stamp >= fault_end_stamp && stamp >= peak_cte_stamp &&
         abs_cte <= cte_threshold && abs_heading <= heading_threshold)
       {
-        if (stable_count == 0) stable_start = time
+        if (stable_count == 0) stable_start_stamp = stamp
         stable_count++
         if (stable_count >= 10 && recovery_time == "") {
-          recovery_time = stable_start - fault_end
+          recovery_time = stable_start_stamp - fault_end_stamp
         }
       } else {
         stable_count = 0
@@ -192,8 +249,8 @@ awk -F, \
 
     final_time = time
     final_cte = abs_cte
-    final_x = $2
-    final_y = $3
+    final_x = $3
+    final_y = $4
   }
   END {
     printf "COMMAND_DISTURBANCE_RESULT\n"
@@ -209,7 +266,7 @@ awk -F, \
     printf "final_position=(%.6f, %.6f) m\n", final_x, final_y
     printf "experiment_duration=%.3f s\n", final_time
   }
-' "${CONTROLLER_CSV}" | tee "${SUMMARY_PATH}"
+' "${GROUND_TRUTH_CSV}" | tee "${SUMMARY_PATH}"
 
 awk -F, '
   NR == 1 {next}

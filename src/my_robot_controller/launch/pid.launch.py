@@ -18,6 +18,9 @@ def generate_launch_description():
     # executes, allowing terminal arguments to override every default below.
     csv_path = LaunchConfiguration('csv_path')
     output_csv_path = LaunchConfiguration('output_csv_path')
+    evaluation_output_csv_path = LaunchConfiguration(
+        'evaluation_output_csv_path'
+    )
     config_path = LaunchConfiguration('config_path')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
@@ -37,14 +40,19 @@ def generate_launch_description():
             default_value='robot_actual_trajectory.csv',
             description='Destination for timestamped controller experiment data',
         ),
-        # Alternate YAML files make named tuning sets possible without editing
-        # the controller's source or its baseline configuration.
+        DeclareLaunchArgument(
+            'evaluation_output_csv_path',
+            default_value='robot_ground_truth_trajectory.csv',
+            description='Ground-truth tracking and EKF localization-error CSV',
+        ),
+        # The cascaded controller is the thesis PID. Legacy lookahead profiles
+        # remain available only for historical checks through an explicit path.
         DeclareLaunchArgument(
             'config_path',
             default_value=PathJoinSubstitution([
-                package_share, 'config', 'pid_baseline.yaml'
+                package_share, 'config', 'pid_cascade.yaml'
             ]),
-            description='PID profile YAML (baseline, fast, robust, cascade, or custom)',
+            description='PID configuration, normally pid_cascade.yaml',
         ),
         # Gazebo experiments should use /clock. Setting this false also permits
         # focused tests driven by odometry with ordinary wall-clock timestamps.
@@ -69,5 +77,19 @@ def generate_launch_description():
                     'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
                 },
             ],
+        ),
+        # This node receives privileged Gazebo truth only for scoring. It never
+        # publishes state or commands and therefore cannot influence control.
+        Node(
+            package='my_robot_controller',
+            executable='trajectory_evaluator_node',
+            name='trajectory_evaluator_node',
+            output='screen',
+            parameters=[{
+                'csv_path': csv_path,
+                'output_csv_path': evaluation_output_csv_path,
+                'search_window': 20,
+                'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+            }],
         ),
     ])

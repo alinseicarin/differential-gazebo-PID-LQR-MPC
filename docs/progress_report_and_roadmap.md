@@ -1,25 +1,26 @@
 # Project Progress Report and Roadmap
 
-Date: 2026-07-19
+Last updated: 2026-08-07
 
 ## 1. Executive summary
 
 Most of the simulation infrastructure is complete, and the project has a
 functional first PID baseline.
 
-Current status:
+Current status after the scope and architecture review:
 
 ```text
 Simulation and ROS architecture:       functional
 Robot model and EKF integration:       functional
-Original lookahead PID:                corrected and functional
+Original lookahead PID:                retained as a historical implementation
 PID experiment logging:                functional
 PID configuration profiles:            created
 Automated benchmark runner:            created
 Five reference paths:                  created
-Cascaded path-error PID:                designed, not implemented
+Cascaded path-error PID:                implemented and selected as thesis PID
+Ground-truth evaluation:                implemented and isolated from feedback
 MATLAB evaluation scripts:             not implemented
-System identification:                 not started
+System identification:                 removed; unnecessary for current plant
 LQR:                                   not started
 MPC:                                   not started
 Formal statistical experiments:        not started
@@ -34,16 +35,16 @@ The current Docker environment is:
 ```text
 Name:   recursing_bhaskara
 ID:     52b800f8190c0424e2d17490e266089c45485daad3055e81b06beb2d149c27dc
-Status: running when this report was prepared
+Status: started only while building or running Gazebo experiments
 ```
 
 The workspace test result at the time of this report was:
 
 ```text
-22 tests
+13 CTest targets
 0 errors
 0 failures
-2 skipped
+15 cppcheck source checks skipped by the ROS wrapper because of tool version
 ```
 
 ## 2. Current interpretation of the thesis
@@ -54,7 +55,8 @@ Based on the preliminary thesis description, the most appropriate scope is:
 > differential-drive robot under a prescribed reference speed, common actuator
 > limits, and controlled disturbances.
 
-This is not necessarily full time-indexed trajectory tracking.
+This scope is definitively geometric path tracking, not time-indexed trajectory
+tracking. The thesis will state that choice explicitly.
 
 The current path files contain:
 
@@ -117,6 +119,12 @@ Gazebo differential-drive plugin
              | /odometry/filtered
              v
        PID controller
+
+Gazebo exact body state
+    |
+    | /ground_truth/odom
+    v
+trajectory evaluator (measurement only)
 ```
 
 Additional components are:
@@ -357,7 +365,7 @@ Current ownership is:
 
 ```text
 Gazebo:
-publishes raw odometry data
+publishes encoder-integrated odometry data
 
 EKF:
 publishes odom -> base_footprint
@@ -399,6 +407,12 @@ and produces:
 
 It operates in planar 2D mode and resets correctly if Gazebo time jumps
 backward. The EKF is the sole owner of the filtered odometry transform.
+
+The EKF fuses encoder velocities and the nonholonomic lateral-velocity
+constraint with IMU yaw rate and longitudinal acceleration. Absolute IMU
+orientation is excluded because the simulated plugin obtains it from exact
+Gazebo attitude. A separate `/ground_truth/odom` stream is reserved for scoring
+only; it is not feedback.
 
 ### 4.11 Launch architecture
 
@@ -469,7 +483,8 @@ tuning set, frozen, and evaluated everywhere.
 
 ### 4.13 Reference tracks
 
-The project contains five tracks.
+The project contains five formal evaluation tracks and two isolated capture
+tests for initial lateral and heading error.
 
 #### Straight
 
@@ -542,7 +557,7 @@ scripts/run_pid_benchmarks.sh
 The default matrix is:
 
 ```text
-3 PID profiles x 5 tracks = 15 trials
+1 cascaded PID x 5 tracks x 3 reproducible seeds = 15 trials
 ```
 
 For every trial, it:
@@ -550,12 +565,13 @@ For every trial, it:
 1. Starts a fresh headless simulation.
 2. Waits for the robot to spawn.
 3. Allows the EKF to initialize.
-4. Starts the selected PID.
+4. Starts the selected PID only after the downstream command subscriber exists.
 5. Waits for completion or timeout.
-6. Stops the controller.
-7. Stops Gazebo.
-8. Calculates summary metrics.
-9. Starts a clean trial.
+6. Holds zero command for a fixed simulation-time settling interval.
+7. Checks Gazebo-truth linear and angular velocity before terminating.
+8. Stops the controller and Gazebo.
+9. Calculates estimator-diagnostic and ground-truth summary metrics separately.
+10. Starts a clean trial.
 
 It calculates:
 
@@ -567,7 +583,7 @@ cross-track RMSE
 maximum cross-track error
 heading RMSE
 maximum heading error
-control-command effort
+normalized command activity
 maximum v_cmd
 maximum w_cmd
 final position
@@ -577,8 +593,8 @@ sample count
 It also supports focused runs, for example:
 
 ```text
-PID_BENCHMARK_PROFILES="baseline" \
 PID_BENCHMARK_TRACKS="circle figure_eight" \
+PID_BENCHMARK_REPETITIONS=1 \
 bash scripts/run_pid_benchmarks.sh /tmp/pid_closed_paths
 ```
 
@@ -842,7 +858,7 @@ Geometric path following with prescribed reference speed.
 
 Define:
 
-- Path-following versus time-indexed trajectory terminology.
+- Geometric path-tracking terminology and its distinction from timed tracking.
 - Controller inputs and outputs.
 - Common state estimates.
 - Common reference manager.
@@ -1044,15 +1060,19 @@ A PID experiment can be launched once and converted into thesis-ready plots and
 tables.
 ```
 
-### Phase 6: Perform system identification
+### Phase 6: Derive and validate the analytical control model
 
 Goal:
 
 ```text
-Identify the simulated velocity-response dynamics needed by LQR and MPC.
+Derive the path-error model used by LQR and MPC from the known differential-
+drive kinematics and the explicitly configured Gazebo actuator constraints.
 ```
 
-Do not identify global position directly as one fixed linear system.
+The simulated plant accepts body-velocity references through a Gazebo joint
+velocity servo. Its wheel acceleration bound is already specified in the URDF,
+so black-box identification would mostly rediscover a known rate limiter and is
+outside the final thesis scope.
 
 Use the known kinematics:
 
@@ -1062,46 +1082,19 @@ y_dot       = v * sin(heading)
 heading_dot = w
 ```
 
-Identify the command-response dynamics:
+Tasks:
 
-```text
-v_cmd -> measured v
-w_cmd -> measured w
-```
-
-Create dedicated excitation trials:
-
-```text
-linear steps
-positive and negative angular steps
-PRBS excitation
-possibly chirp excitation
-combined validation motion
-```
-
-Log:
-
-```text
-time
-v_cmd
-w_cmd
-measured_v
-measured_w
-```
-
-In MATLAB:
-
-- Create estimation and validation datasets.
-- Estimate low-order transfer functions or state-space models.
-- Check delays.
-- Compare predicted and measured responses.
-- Inspect residuals.
-- Increase model order only when justified.
+1. Express the model in cross-track and heading-error coordinates.
+2. Linearize around the common nonzero path-reference speed.
+3. Discretize at the measured controller sample period.
+4. Verify signs and one-step predictions against Gazebo data.
+5. Apply the known velocity, yaw-rate, and wheel-acceleration limits.
 
 Completion condition:
 
 ```text
-A low-order model predicts unused validation data adequately.
+The analytical discrete model reproduces local path-error evolution with the
+accuracy required for LQR and MPC design.
 ```
 
 ### Phase 7: Design the LQR
@@ -1109,7 +1102,7 @@ A low-order model predicts unused validation data adequately.
 Goal:
 
 ```text
-Build the second formal controller using the identified and analytical model.
+Build the second formal controller using the analytical path-error model.
 ```
 
 Use path-relative error states such as:
@@ -1123,7 +1116,7 @@ angular velocity error
 
 Tasks:
 
-1. Combine analytical kinematics with identified velocity dynamics.
+1. Use the linearized analytical path-error dynamics.
 2. Linearize around a nonzero reference speed.
 3. Check controllability.
 4. Select state and input scaling.
@@ -1263,13 +1256,12 @@ Recommended chapter structure:
 3. Simulation and estimation architecture.
 4. Common path-reference formulation.
 5. PID design.
-6. System identification.
-7. LQR design.
-8. MPC design.
-9. Experimental methodology.
-10. Results.
-11. Discussion and limitations.
-12. Conclusions and future work.
+6. Analytical model and LQR design.
+7. MPC design.
+8. Experimental methodology.
+9. Results.
+10. Discussion and limitations.
+11. Conclusions and future work.
 
 Include:
 
@@ -1287,7 +1279,9 @@ Include:
 
 ## 9. Recommended immediate next milestone
 
-The next implementation milestone should not be system identification yet.
+System identification has been removed from the project scope because the
+Gazebo plant uses known kinematics and an explicitly configured wheel-speed
+rate limiter. The next model-based milestone is therefore analytical LQR.
 
 The recommended order is:
 
@@ -1298,16 +1292,11 @@ The recommended order is:
 4. Implement the cascaded PID.
 5. Tune and validate the final PID.
 6. Build the MATLAB reporting pipeline.
-7. Begin system identification.
+7. Derive and validate the analytical path-error model.
 8. Implement LQR.
 9. Implement MPC.
 10. Run formal comparisons.
 ```
-
-System identification should begin only after the controller interface,
-reference-speed definition, logging format, and formal error states are stable.
-Otherwise, the project risks identifying a model for an interface that later
-changes.
 
 ## 10. Overall assessment
 
@@ -1317,7 +1306,7 @@ Current PID baseline:            advanced
 Final PID methodology:           designed but not implemented
 Benchmark infrastructure:        functional but not formalized
 Formal results pipeline:         early
-System identification:           not started
+Analytical LQR model:            not started
 LQR:                             not started
 MPC:                             not started
 ```

@@ -72,8 +72,8 @@ Obiectivele urmărite sunt:
   \item menținerea robotului în vecinătatea unei căi plane predefinite;
   \item folosirea acelorași referințe geometrice, limite de comandă și criterii
         de evaluare pentru toate regulatoarele;
-  \item măsurarea erorii laterale, erorii de orientare, duratei și efortului de
-        control;
+  \item măsurarea erorii laterale, erorii de orientare, duratei și activității
+        normalizate a comenzilor;
   \item evaluarea pe trasee cu proprietăți geometrice diferite și în prezența
         unei perturbații reproductibile a comenzii unghiulare;
   \item păstrarea experimentelor reproductibile prin fișiere de configurare și
@@ -85,14 +85,14 @@ Obiectivele urmărite sunt:
 În forma curentă, problema implementată este una de \emph{urmărire geometrică a
 căii} (path following). Calea stabilește poziția și orientarea dorite în funcție
 de coordonata curbilinie $s$, iar managerul de referință furnizează și o viteză
-nominală $v_{\mathrm{ref}}(s)$. Nu este impusă încă o lege temporală strictă de
+nominală $v_{\mathrm{ref}}(s)$. Nu este impusă o lege temporală strictă de
 forma $(x_{\mathrm{ref}}(t),y_{\mathrm{ref}}(t))$.
 
-Această alegere este adecvată etapei curente deoarece permite compararea
+Această alegere fixează domeniul lucrării deoarece permite compararea
 regulatoarelor în aceleași coordonate de eroare, fără ca o abatere temporară să
-producă automat o eroare longitudinală mare. În lucrarea finală trebuie precizat
-explicit dacă termenul „urmărirea traiectoriei” este folosit în sens larg sau
-dacă se adaugă ulterior o parametrizare temporală propriu-zisă.
+producă automat o eroare longitudinală mare. Termenul „urmărirea traiectoriei”
+din titlul temei este folosit în sensul larg al urmăririi unei căi geometrice;
+nu se adaugă ulterior o parametrizare temporală.
 
 % =============================================================================
 \chapter{Platforma de simulare}
@@ -129,17 +129,33 @@ orientare. Constrângerea neholonomă exclude deplasarea laterală independentă
 
 Simularea folosește ROS~2 Humble și Gazebo Classic. Pluginul de acționare
 diferențială primește comenzi de tip \texttt{geometry\_msgs/Twist} pe tema
-\texttt{/cmd\_vel} și publică odometrie pe \texttt{/odom}. Parametrii geometrici
-ai pluginului sunt identici cu geometria URDF: diametrul roții este
-\SI{0.2}{m}, iar separarea roților este \SI{0.35}{m}.
+\texttt{/cmd\_vel} și publică pe \texttt{/odom} o odometrie obținută prin
+integrarea vitezelor articulațiilor roților. Sursa odometriei a fost configurată
+explicit în modul \emph{encoder}; prin urmare, poziția publicată nu mai este
+citită direct din starea exactă a lumii Gazebo. Parametrii geometrici ai
+pluginului sunt identici cu geometria URDF: diametrul roții este \SI{0.2}{m},
+iar separarea roților este \SI{0.35}{m}.
 
 Un senzor IMU simulat publică pe \texttt{/demo/imu}. Nodul
-\texttt{robot\_localization/ekf\_node} combină odometria roților și datele IMU,
-în modul plan \texttt{two\_d\_mode}, la o frecvență nominală de \SI{30}{Hz}.
-Rezultatul este publicat pe \texttt{/odometry/filtered} și reprezintă starea
-folosită de regulator. EKF-ul este singurul proprietar al transformării dinamice
-\texttt{odom} către \texttt{base\_footprint}, evitând publicarea concurentă a
-aceleiași transformări de către Gazebo.
+\texttt{robot\_localization/ekf\_node} combină viteza longitudinală, condiția
+neholonomă $v_y=0$ și viteza unghiulară furnizate de odometria roților cu viteza
+unghiulară și accelerația longitudinală măsurate de IMU. Poziția și viteza
+derivate din aceleași rotații ale roților nu sunt introduse simultan în filtru,
+deoarece aceasta ar însemna folosirea de două ori a aceleiași informații.
+Orientarea absolută a IMU nu este fuzionată: în pluginul Gazebo ea provine din
+atitudinea exactă simulată și ar constitui o informație privilegiată. Filtrul
+funcționează în modul plan \texttt{two\_d\_mode}, la frecvența nominală de
+\SI{30}{Hz}. Rezultatul \texttt{/odometry/filtered} este singura stare folosită
+de regulator. EKF-ul este și singurul proprietar al transformării dinamice
+\texttt{odom} către \texttt{base\_footprint}.
+
+Pentru evaluare se publică separat \texttt{/ground\_truth/odom}, calculată din
+poziția și viteza corpului în lumea Gazebo. Această mărime nu este conectată la
+regulator sau la EKF. Ea reprezintă un instrument de măsurare extern, folosit
+numai pentru calcularea performanței reale și pentru analiza erorii de
+localizare. Astfel, o derivă a localizării modifică reacția regulatorului și
+poate deteriora mișcarea fizică, dar estimatorul nu își evaluează propria
+estimare ca și cum aceasta ar fi adevărul.
 
 \section{Fluxul informațional}
 
@@ -161,6 +177,10 @@ Odometrie + IMU $\rightarrow$ EKF $\rightarrow$ \texttt{/odometry/filtered}\\
 $\circlearrowleft$
 \end{minipage}}
 \end{center}
+
+În paralel cu această buclă închisă, starea exactă Gazebo este transmisă numai
+evaluatorului. Cele două ramuri au roluri diferite: starea filtrată închide
+bucla de reacție, iar starea exactă măsoară rezultatul fizic al experimentului.
 
 Bucla de control este declanșată de fiecare mesaj de odometrie filtrată. Pentru
 două mesaje acceptate consecutiv, pasul discret este
@@ -492,7 +512,7 @@ Procedura aplicată a fost:
   \item verificarea profilului candidat pe toate traseele, pentru a evita
         suprareglarea pe un singur scenariu;
   \item promovarea câștigurilor numai după verificarea compromisului dintre
-        eroare, durată, efort și saturație;
+        eroare, durată, activitatea comenzilor și saturație;
   \item repetarea probei de perturbație cu profilul final.
 \end{enumerate}
 
@@ -510,8 +530,15 @@ Pentru durata experimentului $T$ sunt calculați:
   e_{\psi,\mathrm{RMS}} &=
   \sqrt{\frac{1}{T}\int_0^T e_\psi^2(t)\,dt}, \\
   e_f &= \sqrt{(x_g-x(T))^2+(y_g-y(T))^2}, \\
-  J_u &= \int_0^T\left(v_{\mathrm{cmd}}^2+0{,}2\omega_{\mathrm{cmd}}^2\right)dt.
+  J_u &= \int_0^T\left[
+    \left(\frac{v_{\mathrm{cmd}}}{v_{\max}}\right)^2+
+    \left(\frac{\omega_{\mathrm{cmd}}}{\omega_{\max}}\right)^2
+  \right]dt.
 \end{align}
+
+Ultimul indicator descrie activitatea comenzilor cinematice. El nu este
+interpretat drept energie electrică sau efort mecanic al motoarelor, deoarece
+interfața regulatorului furnizează referințe de viteză, nu cupluri.
 
 În scenariile de reglare s-a folosit și integrala erorii absolute:
 
@@ -524,9 +551,30 @@ $|e_y|\leq\SI{0.01}{m}$ și $|e_\psi|\leq\SI{0.03}{rad}$. Cerința de persisten�
 împiedică declararea eronată a așezării la o singură traversare a pragului.
 
 Se mai înregistrează valorile maxime absolute ale erorilor și comenzilor,
-durata, numărul de eșantioane și succesul atingerii destinației. Coeficientul
-$0{,}2$ din $J_u$ păstrează contribuția numerică a vitezei unghiulare la o scară
-comparabilă; el trebuie menținut identic pentru toate regulatoarele.
+durata, numărul de eșantioane și succesul atingerii destinației. Regulatorul se
+oprește la o eroare estimată de cel mult \SI{0.08}{m}. Succesul fizic independent
+se verifică din adevărul Gazebo cu pragul \SI{0.15}{m}, egal cu jumătate din
+lungimea șasiului. Pragul mai larg nu ascunde eroarea: distanța finală exactă și
+eroarea de localizare rămân raportate numeric pentru fiecare rulare.
+
+Indicatorii principali de urmărire se calculează din poziția exactă Gazebo,
+proiectată pe aceeași cale ca starea utilizată de regulator. Jurnalul intern al
+regulatorului, bazat pe EKF, se păstrează pentru explicarea comenzilor, dar nu
+este folosit drept arbitru final al performanței. Separat se calculează eroarea
+de localizare
+
+\begin{align}
+  e_{p,\mathrm{loc}}(t) &=
+  \sqrt{\left(\hat{x}(t)-x_{\mathrm{GT}}(t)\right)^2+
+  \left(\hat{y}(t)-y_{\mathrm{GT}}(t)\right)^2}, \\
+  e_{\psi,\mathrm{loc}}(t) &=
+  \operatorname{wrap}\left(\hat{\psi}(t)-\psi_{\mathrm{GT}}(t)\right).
+\end{align}
+
+Fluxurile au marcaje temporale proprii. Pentru calculul erorii de localizare,
+poziția exactă este interpolată la marcajul temporal al estimării EKF. Fără
+această aliniere, întârzierea normală dintre două mesaje ar apărea fals drept o
+eroare de poziție aproximativ egală cu produsul dintre viteză și întârziere.
 
 \section{Proba de perturbație}
 
@@ -552,13 +600,24 @@ numai mărimile necesare definirii și reproducerii indicatorilor.
 \chapter{Rezultatele reglării și validării PID}
 % =============================================================================
 
+Valorile de reglare prezentate în continuare au fost obținute înaintea separării
+complete dintre starea de reacție și starea exactă de evaluare și sunt păstrate
+ca rezultate preliminare ale alegerii câștigurilor. Matricea formală de
+benchmark va fi repetată, iar tabelele finale vor folosi erorile calculate din
+\texttt{/ground\_truth/odom}. O probă de integrare pe dreapta de \SI{5}{m} a
+confirmat funcționarea noii arhitecturi: eroarea finală raportată de EKF a fost
+\SI{0.079}{m}, eroarea finală fizică a fost \SI{0.046}{m}, iar eroarea de
+localizare aliniată temporal a fost \SI{0.020}{m} RMS și \SI{0.026}{m} maxim.
+Aceste valori verifică separarea fluxurilor, dar nu înlocuiesc repetarea
+benchmark-ului complet.
+
 \section{Selectarea buclei interioare}
 
 Tabelul~\ref{tab:inner-tuning} compară profilul inițial cu modificarea exclusivă
 a buclei de orientare. Creșterea câștigurilor a redus ambele integrale ale
 erorii și a scurtat timpul de așezare cu aproximativ \SI{0.29}{s}. A apărut un
 singur eșantion suplimentar la limita vitezei unghiulare, fără creșterea
-depășirii sau a efortului total. Din acest motiv au fost selectate
+depășirii sau a activității totale a comenzilor. Din acest motiv au fost selectate
 $K_{p,\psi}=3{,}0$ și $K_{d,\psi}=0{,}20$.
 
 \begin{table}[htbp]
@@ -668,21 +727,16 @@ raportarea dispersiei.
 
 \section{Necesitatea acțiunii integrale}
 
-Deoarece profilul selectat are $K_{i,y}=K_{i,\psi}=0$, au fost efectuate două
-verificări suplimentare. Prima a folosit o dreaptă de \SI{15}{m} într-un mediu
-cu pantă longitudinală de $15^\circ$. Rampa începe după aproximativ
-$x=\SI{7.8}{m}$. Robotul a finalizat traseul fără eșantioane de stagnare;
-viteza orizontală medie a fost \SI{0.400}{m/s} înaintea rampei și
-\SI{0.382}{m/s} între $x=\SI{8}{m}$ și $x=\SI{14}{m}$, adică o reducere de
-aproximativ $4{,}5\%$. Totuși, proiecția geometrică a vitezei comandate pe axa
-orizontală este $v_x=\SI{0.4}{m/s}\cos15^\circ=\SI{0.386}{m/s}$. Viteza măsurată
-corespunde unei viteze de aproximativ \SI{0.396}{m/s} de-a lungul rampei, foarte
-apropiată de referință. Rezultatul arată că acționarea diferențială de nivel
-inferior furnizează efortul staționar necesar urcării. Integralele laterală și
-unghiulară nu ar fi oricum variabilele potrivite pentru compensarea unei
-eventuale lipse de cuplu longitudinal.
+Deoarece profilul selectat are $K_{i,y}=K_{i,\psi}=0$, verificarea relevantă a
+folosit polarizări unghiulare constante și temporare în calea de comandă. O
+probă anterioară pe o pantă de $15^\circ$ a fost exclusă din metodologia finală:
+odometria roților integrează distanța parcursă pe suprafața înclinată, în timp
+ce referința plană și adevărul Gazebo folosesc proiecția orizontală. În acea
+configurație, regulatorul putea declara atingerea capătului înainte ca robotul
+să ajungă fizic la punctul final, deci proba amesteca eroarea de localizare cu
+performanța regulatorului.
 
-A doua verificare a aplicat pe dreaptă o polarizare unghiulară constantă
+Verificarea păstrată a aplicat pe dreaptă o polarizare unghiulară constantă
 $b=\SI{0.08}{rad/s}$ între secundele 3 și 10. Pentru regimul staționar pe o
 dreaptă, neglijând termenii derivați și considerând orientarea corpului paralelă
 cu traseul, rezultă:
@@ -749,7 +803,7 @@ eliminarea defectului, aceasta trebuie descărcată printr-o eroare de semn opus
 Profilul $K_{i,\psi}=0{,}6$ a fost verificat și pe trasee nominale. RMS-ul
 erorii laterale a scăzut de la \SI{6.82}{mm} la \SI{2.16}{mm} pe cerc și de la
 \SI{6.16}{mm} la \SI{3.75}{mm} pe traseul în formă de opt, cu o creștere a
-efortului sub aproximativ $1\%$. În schimb, la perturbația principală de
+activității comenzilor sub aproximativ $1\%$. În schimb, la perturbația principală de
 $\SI{0.6}{rad/s}$ aplicată timp de o secundă, profilul fără integrală a revenit
 în \SI{4.404}{s} și a încheiat cu \SI{0.11}{mm} abatere laterală, în timp ce
 profilul cu $K_{i,\psi}=0{,}6$ nu a îndeplinit criteriul de revenire și a
@@ -767,9 +821,10 @@ fi inutilă în general.
 
 Înaintea experimentelor, definițiile geometrice, semnele cascadei, reacția la o
 rotație fără abatere laterală, feedforward-ul de curbură, saturațiile și
-frontierele temporale ale perturbației au fost verificate automat. Suita
-completă conține 72 de verificări, fără erori sau eșecuri; 14 verificări de
-instrumentare sunt omise conform configurației proiectului. Acest rezultat
+frontierele temporale ale perturbației au fost verificate automat. Cele 13 ținte
+CTest ale celor două pachete se încheie fără erori sau eșecuri. Instrumentul
+ROS omite 15 verificări statice cppcheck deoarece versiunea instalată este
+marcată drept lentă; testele geometrice și de control sunt executate. Acest rezultat
 este menționat ca verificare a corectitudinii experimentului, fără a detalia în
 teză fiecare funcție sau caz software.
 
@@ -802,8 +857,9 @@ Etapele recomandate în continuare sunt:
         eventual a intervalelor de încredere;
   \item realizarea scripturilor MATLAB pentru suprapunerea căii reale peste
         referință și pentru graficele erorilor și comenzilor;
-  \item identificarea sistemului și validarea unui model pentru LQR;
-  \item implementarea LQR folosind același manager de referință;
+  \item derivarea și validarea modelului analitic liniarizat în coordonate de
+        eroare față de cale;
+  \item implementarea LQR folosind acest model și același manager de referință;
   \item implementarea MPC cu aceleași limite și criterii;
   \item evaluarea finală comparativă PID--LQR--MPC.
 \end{enumerate}
@@ -813,7 +869,11 @@ iar curbura este o aproximație discretă. Reglajul cascadei este experimental,
 nu rezultatul unei optimizări globale. Rezultatele din acest document provin
 din câte o rulare și nu oferă încă o bază statistică. În plus, problema curentă
 este de urmărire geometrică a căii, fără o referință temporală strictă.
-Identificarea sistemului, LQR și MPC nu fac parte din implementarea descrisă aici.
+Identificarea experimentală a sistemului a fost eliminată din domeniul lucrării.
+Pluginul Gazebo aplică o servocomandă de viteză cu o limită de accelerație
+explicit cunoscută, iar proiectul nu urmărește transferul pe un robot fizic;
+LQR și MPC vor folosi modelul cinematic analitic. LQR și MPC nu fac încă parte
+din implementarea descrisă aici.
 
 % =============================================================================
 \appendix
@@ -843,8 +903,6 @@ Identificarea sistemului, LQR și MPC nu fac parte din implementarea descrisă a
   validarea profilului final pe trasee și condiții inițiale; \\
   \path{results/cascade_command_disturbance_final_20260720/recovery_summary.txt} &
   rezultatul final al probei de perturbație; \\
-  \path{results/cascade_pid_incline_diagnostic_20260720/speed_summary.txt} &
-  verificarea progresului pe panta longitudinală; \\
   \path{results/cascade_constant_bias_diagnostic_20260720/steady_state_summary.txt} &
   verificarea regimului staționar fără acțiune integrală; \\
   \path{results/integral_gain_study_20260720.csv} &

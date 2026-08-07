@@ -21,7 +21,7 @@ calculates v and omega
 Gazebo differential-drive robot
 (the simulated plant)
      |
-     +-- wheel odometry --+
+     +-- encoder odometry +
      +-- IMU -------------+
                           v
                          EKF
@@ -30,6 +30,8 @@ Gazebo differential-drive robot
                           | /odometry/filtered
                           v
                  PID path-following node
+
+Gazebo world state --> /ground_truth/odom --> evaluator only
 ```
 
 In control terminology:
@@ -43,6 +45,8 @@ In control terminology:
   `omega`.
 - `/odometry/filtered` is the estimated feedback state: `x`, `y`, and heading
   `theta`.
+- `/ground_truth/odom` is an independent evaluation signal. It never enters the
+  controller or EKF.
 - RViz is only a display and does not affect the control loop.
 
 ## 2. What happens during a simulation
@@ -50,7 +54,7 @@ In control terminology:
 1. Gazebo creates the simulated world.
 2. Gazebo loads the robot from the URDF model.
 3. The differential-drive plugin waits for velocity commands.
-4. Gazebo generates wheel odometry and simulated IMU measurements.
+4. Gazebo generates encoder-integrated odometry and simulated IMU measurements.
 5. The EKF combines those measurements into an estimated robot pose.
 6. The PID controller loads the desired path from a CSV file.
 7. Whenever new estimated odometry arrives, the controller finds the robot's
@@ -58,6 +62,8 @@ In control terminology:
    `v` and `omega`, sends those commands to Gazebo, and records the sample.
 8. When the robot reaches the endpoint, the controller commands zero velocity
    and flushes the output CSV.
+9. In benchmark runs, a passive evaluator projects Gazebo ground truth onto the
+   same path and records true tracking error separately from localization error.
 
 The feedback loop normally updates at approximately 30 Hz in simulation time.
 
@@ -297,7 +303,8 @@ The EKF configuration is `src/my_robot_description/config/ekf.yaml`.
 
 It receives:
 
-- `/odom` from the Gazebo differential-drive plugin.
+- `/odom`, integrated from simulated wheel-joint velocities by the Gazebo
+  differential-drive plugin.
 - `/demo/imu` from the simulated IMU.
 
 It produces:
@@ -307,6 +314,18 @@ It produces:
 
 The EKF uses 2D mode, so the controller works with `x`, `y`, and `theta` rather
 than vertical position, roll, and pitch.
+
+It fuses encoder body velocity, the nonholonomic `vy = 0` constraint, encoder
+yaw rate, IMU yaw rate, and IMU longitudinal acceleration. Encoder-derived pose
+is not fused together with encoder velocity, and Gazebo's exact IMU orientation
+is excluded. This avoids double-counting one wheel source and avoids feeding
+privileged simulator attitude into the controller.
+
+Gazebo also publishes `/ground_truth/odom` through a separate P3D plugin. That
+topic goes only to the trajectory evaluator.
+Tracking metrics use truth; the PID continues to react exclusively to the EKF.
+Truth is interpolated to the EKF timestamp before localization error is
+calculated, so message latency is not mislabeled as spatial drift.
 
 Both sensor sources are simulated. This supports architecture development, but
 does not automatically reproduce every physical effect such as wheel slip,
@@ -343,16 +362,21 @@ use_sim_time
 
 A track or tuning profile can therefore be changed without recompiling C++.
 
-## 9. PID tuning profiles
+## 9. PID configuration
 
-The named profiles are:
+The thesis PID is the cascaded controller configured by:
+
+- `pid_cascade.yaml`
+
+The launch file and benchmark runner now select it by default. The following
+lookahead profiles are retained only as historical tuning artifacts:
 
 - `pid_baseline.yaml`
 - `pid_fast.yaml`
 - `pid_robust.yaml`
 
-`pid.yaml` remains as a compatibility/default copy, while the launch file uses
-the explicitly named baseline profile by default.
+The former duplicate `pid.yaml` compatibility copy was removed so configuration
+cannot silently diverge from the named profiles.
 
 ### 9.1 Baseline
 
@@ -402,7 +426,8 @@ waypoint_index
 ```
 
 This supports MATLAB plots of desired versus actual trajectory, cross-track and
-heading errors, velocity commands, completion time, and control effort.
+heading errors, velocity commands, completion time, and normalized command
+activity.
 
 Logged `reference_x` and `reference_y` are the robot's projection onto the path,
 not a same-numbered waypoint. The full original reference remains available in
@@ -410,10 +435,11 @@ the input track CSV.
 
 ## 11. Automated benchmarks
 
-`scripts/run_pid_benchmarks.sh` runs three profiles on five nominal paths:
+`scripts/run_pid_benchmarks.sh` runs the frozen cascade PID three times on five
+nominal paths by default:
 
 ```text
-3 PID profiles x 5 tracks = 15 experiments
+1 PID profile x 5 tracks x 3 seeds = 15 experiments
 ```
 
 The paths are a 5 m straight line, sinusoidal curve, 90-degree corner, circle,
@@ -422,10 +448,11 @@ completion. The figure-eight tests steering reversal, intersection handling,
 and closed-path completion.
 
 For every trial, the script starts a fresh headless simulation, waits for the
-robot and EKF, starts the selected controller, waits for completion or timeout,
-saves the trajectory, stops all processes, calculates metrics, and then starts
-a clean simulation for the next trial. A clean start prevents previous robot or
-EKF state from contaminating another experiment.
+robot and EKF, waits for the complete DDS command path, starts the selected
+controller, waits for completion, applies a fixed simulation-time settling
+condition, saves the path data, calculates metrics, and then starts a clean
+simulation. A clean start prevents previous robot or EKF state from
+contaminating another experiment.
 
 ### 11.1 Reported metrics
 
@@ -434,26 +461,27 @@ EKF state from contaminating another experiment.
 - Final position error.
 - Cross-track RMSE and maximum absolute cross-track error.
 - Heading-error RMSE and maximum absolute heading error.
-- Control effort.
+- Normalized command activity.
 - Maximum commanded `v` and `omega`.
 - Final position and number of samples.
 
-Current control effort is defined as:
+Normalized command activity is defined as:
 
 ```text
-J_u = integral(v^2 + 0.2 omega^2) dt
+J_u = integral((v/v_max)^2 + (omega/omega_max)^2) dt
 ```
 
-The factor 0.2 is an experiment-design weighting, not a physical constant. The
-same definition must be retained for PID, LQR, and MPC comparisons.
+This is a quadratic measure of kinematic command usage, not motor energy or
+mechanical effort. The same limits and definition are retained for PID, LQR,
+and MPC comparisons.
 
 ### 11.2 Preliminary single-run observations
 
 - Fast was approximately 26% faster than baseline.
 - Fast had approximately 37% more curve/corner cross-track error.
-- Fast used approximately 46% more control effort.
+- Fast used approximately 46% more command activity under the historical metric.
 - Robust reduced curve/corner cross-track error by approximately 41%.
-- Robust used slightly less control effort.
+- Robust used slightly less command activity under the historical metric.
 - Robust was approximately 61% slower.
 - All nine trials in the earlier three-track matrix reached the endpoint within
   the 8 cm tolerance. The circle and figure-eight were added afterward and must

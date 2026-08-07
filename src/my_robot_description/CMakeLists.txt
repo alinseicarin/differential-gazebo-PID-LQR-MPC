@@ -28,6 +28,7 @@ install(DIRECTORY
   config
   worlds
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
 )
 
 # Export package metadata even though there is no compiled library/executable.

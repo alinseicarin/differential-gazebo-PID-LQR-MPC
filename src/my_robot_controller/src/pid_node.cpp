@@ -16,7 +16,7 @@ PidNode::PidNode()
   // recompiling or depending on the container's directory layout.
   declare_parameter<std::string>("csv_path", "");
   declare_parameter<std::string>("output_csv_path", "robot_actual_trajectory.csv");
-  declare_parameter<std::string>("controller_mode", "lookahead");
+  declare_parameter<std::string>("controller_mode", "cascade");
 
   // -----------------------------------------------------------------------
   // PID gains
@@ -66,6 +66,7 @@ PidNode::PidNode()
   declare_parameter<double>("max_linear_velocity", 1.0);
   declare_parameter<double>("max_angular_velocity", 1.5);
   declare_parameter<double>("odom_timeout", 2.0);
+  declare_parameter<double>("startup_settling_time", 1.0);
 
   // Validate integer/rate settings before converting signed parameter values
   // to unsigned indices.
@@ -84,6 +85,7 @@ PidNode::PidNode()
   max_linear_velocity_ = get_parameter("max_linear_velocity").as_double();
   max_angular_velocity_ = get_parameter("max_angular_velocity").as_double();
   odom_timeout_ = get_parameter("odom_timeout").as_double();
+  startup_settling_time_ = get_parameter("startup_settling_time").as_double();
 
   const std::string controller_mode = get_parameter("controller_mode").as_string();
   if (controller_mode == "lookahead") {
@@ -98,9 +100,11 @@ PidNode::PidNode()
   // undefined, so reject the entire configuration before ROS I/O starts.
   if (max_control_dt_ <= 0.0 || goal_tolerance_ <= 0.0 ||
     max_linear_velocity_ <= 0.0 || max_angular_velocity_ <= 0.0 ||
-    odom_timeout_ <= 0.0)
+    odom_timeout_ <= 0.0 || startup_settling_time_ < 0.0)
   {
-    throw std::runtime_error("Timing, tolerance, timeout, and velocity limits must be positive");
+    throw std::runtime_error(
+            "Timing, tolerance, timeout, and velocity limits must be positive; "
+            "startup settling time must be non-negative");
   }
 
   // Apply parameter values and start both controllers with empty memory.
@@ -287,10 +291,53 @@ void PidNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     return;
   }
 
+  const double stamp_seconds = rclcpp::Time(msg->header.stamp).seconds();
+
+  // DDS endpoint discovery is asynchronous. During earlier experiments the
+  // controller sometimes logged nonzero commands for almost two seconds before
+  // Gazebo's subscriber was connected. Do not start experiment time, path
+  // progress, or PID memory until the complete downstream command path exists.
+  if (!command_transport_connected_) {
+    last_odom_wall_time_ = std::chrono::steady_clock::now();
+    if (velocity_publisher_->get_subscription_count() == 0u) {
+      if (!waiting_for_command_path_logged_) {
+        RCLCPP_INFO(get_logger(), "Waiting for the downstream command subscriber");
+        waiting_for_command_path_logged_ = true;
+      }
+      return;
+    }
+
+    command_transport_connected_ = true;
+    command_connection_stamp_seconds_ = stamp_seconds;
+    waiting_for_command_path_logged_ = false;
+    publish_stop();
+    RCLCPP_INFO(
+      get_logger(), "Command path connected; holding zero command for %.3f s of simulation time",
+      startup_settling_time_);
+    return;
+  }
+
+  // Allow contacts, the wheel-velocity servo, and the estimator to reach a
+  // repeatable stationary state after transport discovery. This interval is
+  // simulation-time based and is excluded from every logged experiment metric.
+  if (!command_path_ready_) {
+    last_odom_wall_time_ = std::chrono::steady_clock::now();
+    publish_stop();
+    if (stamp_seconds - command_connection_stamp_seconds_ < startup_settling_time_) {
+      return;
+    }
+
+    command_path_ready_ = true;
+    odom_received_ = false;
+    stop_sent_ = false;
+    reset_controllers();
+    reference_manager_.reset_progress();
+    RCLCPP_INFO(get_logger(), "Startup settling complete; starting the path-tracking experiment");
+  }
+
   // Compute dt from ROS timestamps rather than the host clock. Therefore the
   // controller follows simulation time when Gazebo runs slower/faster than
   // real time. The nominal period is used for the first available sample.
-  const double stamp_seconds = rclcpp::Time(msg->header.stamp).seconds();
   double dt = nominal_dt_;
   if (!odom_received_) {
     first_stamp_seconds_ = stamp_seconds;
@@ -382,8 +429,9 @@ void PidNode::control_loop(double stamp_seconds, double dt)
     log_sample(stamp_seconds, reference, diagnostics, 0.0, 0.0);
     trajectory_csv_.flush();
     RCLCPP_INFO(
-      get_logger(), "Track complete at (%.3f, %.3f); final error %.3f m",
-      current_x_, current_y_, reference.distance_to_goal);
+      get_logger(),
+      "Track complete at simulation time %.6f s at (%.3f, %.3f); final error %.3f m",
+      stamp_seconds, current_x_, current_y_, reference.distance_to_goal);
     return;
   }
 

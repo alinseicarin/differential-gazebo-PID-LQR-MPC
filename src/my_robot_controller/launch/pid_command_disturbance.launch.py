@@ -19,6 +19,9 @@ def generate_launch_description():
     applied_command_csv_path = LaunchConfiguration(
         'applied_command_csv_path'
     )
+    evaluation_output_csv_path = LaunchConfiguration(
+        'evaluation_output_csv_path'
+    )
     config_path = LaunchConfiguration('config_path')
     use_sim_time = LaunchConfiguration('use_sim_time')
     fault_start_delay = LaunchConfiguration('fault_start_delay')
@@ -43,6 +46,11 @@ def generate_launch_description():
             'applied_command_csv_path',
             default_value='command_disturbance_actual_commands.csv',
             description='Nominal versus applied actuator-command CSV',
+        ),
+        DeclareLaunchArgument(
+            'evaluation_output_csv_path',
+            default_value='robot_ground_truth_trajectory.csv',
+            description='Ground-truth tracking and EKF localization-error CSV',
         ),
         DeclareLaunchArgument(
             'config_path',
@@ -120,6 +128,20 @@ def generate_launch_description():
                 'maximum_abs_angular_velocity': 1.5,
                 'input_timeout': 2.0,
                 'output_csv_path': applied_command_csv_path,
+            }],
+        ),
+        # Evaluation-only access to Gazebo truth remains isolated from both the
+        # controller and command-fault path.
+        Node(
+            package='my_robot_controller',
+            executable='trajectory_evaluator_node',
+            name='trajectory_evaluator_node',
+            output='screen',
+            parameters=[{
+                'csv_path': csv_path,
+                'output_csv_path': evaluation_output_csv_path,
+                'search_window': 20,
+                'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
             }],
         ),
     ])

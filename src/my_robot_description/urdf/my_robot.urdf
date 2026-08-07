@@ -68,14 +68,16 @@
         <inertial>
             <origin xyz="0.05 0 0" rpy="0 0 0"/>
             <mass value="3.0"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <!-- Rectangular-box inertia about the 3 kg chassis centre of mass. -->
+            <inertia ixx="0.0125" ixy="0.0" ixz="0.0" iyy="0.025" iyz="0.0" izz="0.0325"/>
         </inertial>
     </link>
 
     <!-- Left drive wheel. The cylinder is rotated so its original z-axis lies
          along the robot's lateral y-axis; the joint then spins continuously. -->
     <joint name="left_wheel_joint" type="continuous">
-        <limit effort="2.5" velocity="10.0"/>
+        <!-- Match the force limit imposed by gazebo_ros_diff_drive below. -->
+        <limit effort="20.0" velocity="10.0"/>
         <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="left_wheel"/>
@@ -99,14 +101,15 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <!-- Solid-cylinder inertia; the local z-axis is the wheel axle. -->
+            <inertia ixx="0.000270833" ixy="0.0" ixz="0.0" iyy="0.000270833" iyz="0.0" izz="0.0005"/>
         </inertial>
     </link>
 
     <!-- Mirrored right joint. The reversed axis keeps positive wheel rotation
          consistent with forward robot motion after the opposite cylinder roll. -->
     <joint name="right_wheel_joint" type="continuous">
-        <limit effort="2.5" velocity="10.0"/>
+        <limit effort="20.0" velocity="10.0"/>
         <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="right_wheel"/>
@@ -129,7 +132,7 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <inertia ixx="0.000270833" ixy="0.0" ixz="0.0" iyy="0.000270833" iyz="0.0" izz="0.0005"/>
         </inertial>
     </link>
 
@@ -155,7 +158,8 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <!-- Solid-sphere inertia: 2*m*r^2/5. -->
+            <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
         </inertial>
     </link>
     <!-- Wheel/ground friction used by Gazebo's contact solver. Both directions
@@ -188,12 +192,13 @@
             <update_rate>100</update_rate> <visualize>true</visualize>
       
             <!-- Independent zero-mean Gaussian noise is applied to each axis.
-                 Standard deviations use the corresponding SI sensor units. -->
+                 The 0.002 rad/s gyro deviation keeps the IMU informative without
+                 making encoder yaw-rate fusion numerically irrelevant. -->
             <imu>
                 <angular_velocity>
-                    <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></x>
-                    <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></y>
-                    <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></z>
+                    <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+                    <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+                    <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
                 </angular_velocity>
                 <linear_acceleration>
                     <x><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></x>
@@ -204,7 +209,7 @@
         </sensor>
     </gazebo>
 
-    <!-- Differential-drive actuator and wheel-odometry model.
+    <!-- Differential-drive actuator and wheel-encoder odometry model.
 
          Input:  /cmd_vel (geometry_msgs/Twist)
          Output: /odom (nav_msgs/Odometry)
@@ -221,6 +226,11 @@
             <wheel_separation>0.35</wheel_separation>
             <wheel_diameter>0.2</wheel_diameter>
 
+            <!-- Source 0 integrates the simulated wheel-joint velocities.
+                 Unlike the WORLD default, it cannot read the exact Gazebo body
+                 pose and therefore accumulates error when wheels slip. -->
+            <odometry_source>0</odometry_source>
+
             <!-- Torque and acceleration limits model actuator constraints and
                  influence transient response during benchmark trials. -->
             <max_wheel_torque>20</max_wheel_torque>
@@ -234,10 +244,26 @@
             <odometry_frame>odom</odometry_frame>
             <robot_base_frame>base_footprint</robot_base_frame>
 
-            <!-- Covariances tell the EKF how much confidence to assign to
-                 simulated wheel odometry pose measurements. -->
-            <covariance_x>0.001</covariance_x> <covariance_y>0.001</covariance_y> <covariance_yaw>0.01</covariance_yaw> 
+            <!-- Covariances describe encoder-derived pose and twist uncertainty
+                 to downstream estimators; they do not themselves add noise. -->
+            <covariance_x>0.001</covariance_x> <covariance_y>0.001</covariance_y> <covariance_yaw>0.0001</covariance_yaw>
       
+        </plugin>
+
+        <!-- Evaluation-only ground truth. This plugin reads the chassis pose
+             and velocity directly from Gazebo and publishes /ground_truth/odom.
+             Controllers never subscribe to this topic; it is reserved for
+             measuring true tracking error and EKF localization error. -->
+        <plugin name="ground_truth" filename="libgazebo_ros_p3d.so">
+            <ros>
+                <remapping>odom:=ground_truth/odom</remapping>
+            </ros>
+            <!-- Gazebo lumps the fixed chassis joint into the canonical base
+                 link, so base_footprint is the body visible to this plugin. -->
+            <body_name>base_footprint</body_name>
+            <frame_name>world</frame_name>
+            <update_rate>30.0</update_rate>
+            <gaussian_noise>0.0</gaussian_noise>
         </plugin>
     </gazebo>
 

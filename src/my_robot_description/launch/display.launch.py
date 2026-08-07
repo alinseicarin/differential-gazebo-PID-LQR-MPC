@@ -37,11 +37,21 @@ def generate_launch_description():
         description='Start Gazebo and RViz GUIs; false runs physics headlessly'
     )
 
+    # A fixed default seed makes simulated sensor noise reproducible. Formal
+    # repeated trials can override it to quantify sensitivity to noise.
+    seed_arg = DeclareLaunchArgument(
+        'seed',
+        default_value='42',
+        description='Gazebo random seed used by physics and sensor noise'
+    )
+
     # LaunchConfiguration is resolved at launch time after arguments are parsed.
     world_name = LaunchConfiguration('world')
+    seed = LaunchConfiguration('seed')
 
     # A substitution list concatenates the directory and selected world name.
     world_path = [os.path.join(pkg_path, 'worlds', ''), world_name]
+    gazebo_config_path = os.path.join(pkg_path, 'config', 'gazebo.yaml')
 
     # Publish fixed URDF joints and wheel transforms derived from /joint_states.
     # Simulation time keeps TF timestamps aligned with Gazebo and the EKF.
@@ -72,7 +82,9 @@ def generate_launch_description():
     gazebo_gui = ExecuteProcess(
         cmd=['gazebo', '--verbose', world_path,
              '-s', 'libgazebo_ros_init.so',
-             '-s', 'libgazebo_ros_factory.so'],
+             '-s', 'libgazebo_ros_factory.so',
+             '--seed', seed,
+             '--ros-args', '--params-file', gazebo_config_path, '--'],
         output='screen',
         condition=IfCondition(LaunchConfiguration('gui'))
     )
@@ -81,7 +93,9 @@ def generate_launch_description():
     gazebo_headless = ExecuteProcess(
         cmd=['gzserver', '--verbose', world_path,
              '-s', 'libgazebo_ros_init.so',
-             '-s', 'libgazebo_ros_factory.so'],
+             '-s', 'libgazebo_ros_factory.so',
+             '--seed', seed,
+             '--ros-args', '--params-file', gazebo_config_path, '--'],
         output='screen',
         condition=UnlessCondition(LaunchConfiguration('gui'))
     )
@@ -113,6 +127,7 @@ def generate_launch_description():
     return LaunchDescription([
         world_arg,
         gui_arg,
+        seed_arg,
         rsp_node,
         # RViz is unnecessary in headless benchmark mode.
         rviz_node,

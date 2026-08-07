@@ -42,3 +42,4 @@ pid_node:
     max_linear_velocity: 1.0
     max_angular_velocity: 1.5
     odom_timeout: 2.0
+    startup_settling_time: 1.0
