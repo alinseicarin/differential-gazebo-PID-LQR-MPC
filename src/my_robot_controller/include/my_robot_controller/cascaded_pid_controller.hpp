@@ -16,15 +16,15 @@ struct CascadedPidConfig
   double longitudinal_integral_limit{0.5};
 
   // Outer lateral loop: body-frame e_y [m] -> heading correction [rad].
-  double cross_track_kp{1.2};
+  double cross_track_kp{1.5};
   double cross_track_ki{0.0};
-  double cross_track_kd{0.15};
+  double cross_track_kd{0.20};
   double cross_track_integral_limit{0.5};
 
   // Inner loop: corrected heading error [rad] -> yaw-rate feedback [rad/s].
-  double heading_kp{2.5};
+  double heading_kp{3.0};
   double heading_ki{0.0};
-  double heading_kd{0.15};
+  double heading_kd{0.20};
   double heading_integral_limit{0.5};
 
   // The outer loop may request only a physically meaningful heading change.
@@ -48,7 +48,7 @@ struct CascadedPidOutput
 /// One loop maps longitudinal pose error to linear-speed feedback. The outer
 /// lateral loop converts body-frame lateral error into a desired heading, and
 /// the inner loop returns yaw-rate feedback. The resulting pair
-/// [delta_v, delta_omega] matches the future LQR and MPC controller interface.
+/// [delta_v, delta_omega] matches the LQR and MPC controller interface.
 class CascadedPidController
 {
 public:

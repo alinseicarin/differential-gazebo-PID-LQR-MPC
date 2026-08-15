@@ -32,6 +32,17 @@ void CommandDisturbance::validate_config(const CommandDisturbanceConfig & config
   {
     throw std::invalid_argument("Command-fault velocity biases must be finite");
   }
+  if (!std::isfinite(config.left_wheel_effectiveness) ||
+    !std::isfinite(config.right_wheel_effectiveness) ||
+    config.left_wheel_effectiveness < 0.0 || config.left_wheel_effectiveness > 1.0 ||
+    config.right_wheel_effectiveness < 0.0 || config.right_wheel_effectiveness > 1.0)
+  {
+    throw std::invalid_argument(
+            "Wheel-effectiveness factors must be finite values in [0, 1]");
+  }
+  if (!std::isfinite(config.wheel_separation) || config.wheel_separation <= 0.0) {
+    throw std::invalid_argument("Wheel separation must be finite and positive");
+  }
   if (!std::isfinite(config.maximum_abs_linear_velocity) ||
     config.maximum_abs_linear_velocity <= 0.0 ||
     !std::isfinite(config.maximum_abs_angular_velocity) ||
@@ -63,26 +74,144 @@ CommandDisturbanceOutput CommandDisturbance::apply(
   CommandDisturbanceOutput output;
   output.nominal_linear_velocity = nominal_linear_velocity;
   output.nominal_angular_velocity = nominal_angular_velocity;
-  output.fault_active =
-    elapsed_time + kScheduleTimeTolerance >= config_.start_delay &&
-    elapsed_time + kScheduleTimeTolerance < config_.start_delay + config_.duration;
+  output.fault_active = is_active(elapsed_time);
+
+  // Convert the body command to equivalent wheel-ground velocities. Applying
+  // effectiveness here emulates a weakened drive side while keeping the
+  // downstream Gazebo diff-drive interface unchanged and controller agnostic.
+  const double half_separation = 0.5 * config_.wheel_separation;
+  output.nominal_left_wheel_velocity =
+    nominal_linear_velocity - half_separation * nominal_angular_velocity;
+  output.nominal_right_wheel_velocity =
+    nominal_linear_velocity + half_separation * nominal_angular_velocity;
+  output.effective_left_wheel_velocity = output.nominal_left_wheel_velocity;
+  output.effective_right_wheel_velocity = output.nominal_right_wheel_velocity;
+  const bool wheel_fault_active = output.fault_active &&
+    (config_.left_wheel_effectiveness != 1.0 ||
+    config_.right_wheel_effectiveness != 1.0);
+  if (wheel_fault_active) {
+    output.effective_left_wheel_velocity *= config_.left_wheel_effectiveness;
+    output.effective_right_wheel_velocity *= config_.right_wheel_effectiveness;
+  }
+
+  // Preserve the controller command exactly when no wheel fault is active;
+  // an unnecessary forward/inverse conversion would change its last floating
+  // point bit and would make a nominal pass-through needlessly non-transparent.
+  double effective_linear_velocity = nominal_linear_velocity;
+  double effective_angular_velocity = nominal_angular_velocity;
+  if (wheel_fault_active) {
+    effective_linear_velocity = 0.5 *
+      (output.effective_left_wheel_velocity + output.effective_right_wheel_velocity);
+    effective_angular_velocity =
+      (output.effective_right_wheel_velocity - output.effective_left_wheel_velocity) /
+      config_.wheel_separation;
+  }
 
   const double linear_bias = output.fault_active ? config_.linear_velocity_bias : 0.0;
   const double angular_bias = output.fault_active ? config_.angular_velocity_bias : 0.0;
   output.applied_linear_velocity = std::clamp(
-    nominal_linear_velocity + linear_bias,
+    effective_linear_velocity + linear_bias,
     -config_.maximum_abs_linear_velocity,
     config_.maximum_abs_linear_velocity);
   output.applied_angular_velocity = std::clamp(
-    nominal_angular_velocity + angular_bias,
+    effective_angular_velocity + angular_bias,
     -config_.maximum_abs_angular_velocity,
     config_.maximum_abs_angular_velocity);
   return output;
 }
 
+bool CommandDisturbance::is_active(double elapsed_time) const
+{
+  if (!std::isfinite(elapsed_time) || elapsed_time < 0.0) {
+    throw std::invalid_argument("Command-fault elapsed time must be finite and non-negative");
+  }
+  return config_.enabled &&
+         elapsed_time + kScheduleTimeTolerance >= config_.start_delay &&
+         elapsed_time + kScheduleTimeTolerance < config_.start_delay + config_.duration;
+}
+
 const CommandDisturbanceConfig & CommandDisturbance::config() const
 {
   return config_;
+}
+
+CommandDelay::CommandDelay(double delay)
+{
+  configure(delay);
+}
+
+void CommandDelay::configure(double delay)
+{
+  if (!std::isfinite(delay) || delay < 0.0) {
+    throw std::invalid_argument("Command delay must be finite and non-negative");
+  }
+  delay_ = delay;
+  reset();
+}
+
+void CommandDelay::reset()
+{
+  history_.clear();
+}
+
+DelayedCommandOutput CommandDelay::apply(
+  double current_linear_velocity,
+  double current_angular_velocity,
+  double elapsed_time,
+  bool fault_active)
+{
+  if (!std::isfinite(current_linear_velocity) ||
+    !std::isfinite(current_angular_velocity) ||
+    !std::isfinite(elapsed_time) || elapsed_time < 0.0)
+  {
+    throw std::invalid_argument(
+            "Delayed command and elapsed time must be finite and non-negative");
+  }
+
+  if (!history_.empty() && elapsed_time + kScheduleTimeTolerance < history_.back().time) {
+    reset();
+  }
+  history_.push_back({elapsed_time, current_linear_velocity, current_angular_velocity});
+
+  DelayedCommandOutput output;
+  output.current_linear_velocity = current_linear_velocity;
+  output.current_angular_velocity = current_angular_velocity;
+  output.source_linear_velocity = current_linear_velocity;
+  output.source_angular_velocity = current_angular_velocity;
+  output.source_time = elapsed_time;
+  output.delay_active = fault_active && delay_ > 0.0;
+
+  if (output.delay_active) {
+    const double target_time = elapsed_time - delay_;
+    bool source_found = false;
+    for (auto iterator = history_.rbegin(); iterator != history_.rend(); ++iterator) {
+      if (iterator->time <= target_time + kScheduleTimeTolerance) {
+        output.source_linear_velocity = iterator->linear_velocity;
+        output.source_angular_velocity = iterator->angular_velocity;
+        output.source_time = iterator->time;
+        source_found = true;
+        break;
+      }
+    }
+    // This can occur only if a delay is activated before enough history has
+    // accumulated. A zero command is safer and deterministic in that case.
+    if (!source_found) {
+      output.source_linear_velocity = 0.0;
+      output.source_angular_velocity = 0.0;
+      output.source_time = elapsed_time;
+    }
+  }
+
+  const double oldest_useful_time = elapsed_time - delay_ - 1.0;
+  while (history_.size() > 2u && history_[1].time < oldest_useful_time) {
+    history_.pop_front();
+  }
+  return output;
+}
+
+double CommandDelay::delay() const
+{
+  return delay_;
 }
 
 }  // namespace my_robot_controller

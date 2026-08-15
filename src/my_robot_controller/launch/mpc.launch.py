@@ -1,4 +1,4 @@
-"""Launch timed PID trajectory tracking with reproducible experiment parameters."""
+"""Launch constrained timed LTV-MPC with ground-truth evaluation."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -9,13 +9,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Declare experiment arguments and construct the PID ROS node action."""
-    # FindPackageShare resolves the installed package through the ament index;
-    # this avoids hard-coded /home/ws paths and works after relocating a build.
+    """Declare common experiment paths and construct the MPC control graph."""
     package_share = FindPackageShare('my_robot_controller')
-
-    # LaunchConfiguration objects are resolved only when the launch description
-    # executes, allowing terminal arguments to override every default below.
     csv_path = LaunchConfiguration('csv_path')
     output_csv_path = LaunchConfiguration('output_csv_path')
     evaluation_output_csv_path = LaunchConfiguration(
@@ -23,10 +18,12 @@ def generate_launch_description():
     )
     config_path = LaunchConfiguration('config_path')
     reference_config_path = LaunchConfiguration('reference_config_path')
+    prediction_horizon_steps = LaunchConfiguration(
+        'prediction_horizon_steps'
+    )
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
-        # The default track is installed by CMake alongside this launch file.
         DeclareLaunchArgument(
             'csv_path',
             default_value=PathJoinSubstitution([
@@ -34,26 +31,22 @@ def generate_launch_description():
             ]),
             description='CSV file containing headerless x,y waypoint rows',
         ),
-        # A relative output path is interpreted from the directory in which the
-        # user invokes ros2 launch. Pass an absolute path for scripted trials.
         DeclareLaunchArgument(
             'output_csv_path',
-            default_value='robot_actual_trajectory.csv',
-            description='Destination for timestamped controller experiment data',
+            default_value='robot_mpc_trajectory.csv',
+            description='Destination for MPC state, solver, and command data',
         ),
         DeclareLaunchArgument(
             'evaluation_output_csv_path',
-            default_value='robot_ground_truth_trajectory.csv',
-            description='Ground-truth tracking and EKF localization-error CSV',
+            default_value='robot_mpc_ground_truth_trajectory.csv',
+            description='Ground-truth tracking and localization evaluation CSV',
         ),
-        # The cascaded controller is the thesis PID. Legacy lookahead profiles
-        # remain available only for historical checks through an explicit path.
         DeclareLaunchArgument(
             'config_path',
             default_value=PathJoinSubstitution([
-                package_share, 'config', 'pid_cascade.yaml'
+                package_share, 'config', 'mpc.yaml'
             ]),
-            description='PID configuration, normally pid_cascade.yaml',
+            description='MPC horizon, weights, solver, and common parameters',
         ),
         DeclareLaunchArgument(
             'reference_config_path',
@@ -62,19 +55,16 @@ def generate_launch_description():
             ]),
             description='Common timed-reference configuration',
         ),
-        # Gazebo experiments should use /clock. Setting this false also permits
-        # focused tests driven by odometry with ordinary wall-clock timestamps.
+        DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument(
-            'use_sim_time',
-            default_value='true',
-            description='Use the Gazebo simulation clock',
+            'prediction_horizon_steps',
+            default_value='45',
+            description='Number of discrete stages in the MPC horizon',
         ),
-        # YAML supplies the baseline settings; the following dictionary is
-        # applied later and therefore gives launch arguments override priority.
         Node(
             package='my_robot_controller',
-            executable='pid_node',
-            name='pid_node',
+            executable='mpc_node',
+            name='mpc_node',
             output='screen',
             parameters=[
                 config_path,
@@ -82,13 +72,15 @@ def generate_launch_description():
                 {
                     'csv_path': csv_path,
                     'output_csv_path': output_csv_path,
-                    # Explicit type conversion avoids treating "true" as text.
-                    'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+                    'mpc_prediction_horizon_steps': ParameterValue(
+                        prediction_horizon_steps, value_type=int
+                    ),
+                    'use_sim_time': ParameterValue(
+                        use_sim_time, value_type=bool
+                    ),
                 },
             ],
         ),
-        # This node receives privileged Gazebo truth only for scoring. It never
-        # publishes state or commands and therefore cannot influence control.
         Node(
             package='my_robot_controller',
             executable='trajectory_evaluator_node',

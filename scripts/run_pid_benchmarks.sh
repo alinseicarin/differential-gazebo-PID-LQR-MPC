@@ -6,6 +6,7 @@
 #
 # Optional selectors can reduce a development run without changing the default
 # cascaded-PID, five-track, three-repetition formal matrix. For example:
+#   PID_BENCHMARK_GUI=true \
 #   PID_BENCHMARK_TRACKS="circle figure_eight" \
 #   PID_BENCHMARK_REPETITIONS=1 \
 #     bash scripts/run_pid_benchmarks.sh /tmp/pid_closed_paths
@@ -28,6 +29,7 @@ export ROS2CLI_DISABLE_DAEMON=1
 
 RESULT_DIR="${1:-/tmp/pid_benchmarks}"
 mkdir -p "${RESULT_DIR}"
+GUI="${PID_BENCHMARK_GUI:-false}"
 REPETITIONS="${PID_BENCHMARK_REPETITIONS:-3}"
 BASE_SEED="${PID_BENCHMARK_BASE_SEED:-42}"
 SETTLING_SIM_TIME="${PID_BENCHMARK_SETTLING_TIME:-2.0}"
@@ -35,11 +37,12 @@ SETTLING_LINEAR_THRESHOLD="${PID_BENCHMARK_SETTLING_LINEAR_THRESHOLD:-0.01}"
 SETTLING_ANGULAR_THRESHOLD="${PID_BENCHMARK_SETTLING_ANGULAR_THRESHOLD:-0.02}"
 SETTLING_WALL_TIMEOUT="${PID_BENCHMARK_SETTLING_WALL_TIMEOUT:-15}"
 
-if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
+if [[ "${GUI}" != "true" && "${GUI}" != "false" ]] ||
+  ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "${BASE_SEED}" =~ ^[0-9]+$ ]] ||
   ! [[ "${SETTLING_WALL_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]
 then
-  echo "Repetitions/settling timeout must be positive and base seed non-negative" >&2
+  echo "GUI must be true/false; repetitions and settling timeout must be positive; base seed must be non-negative" >&2
   exit 2
 fi
 
@@ -121,7 +124,7 @@ run_trial()
 
   # setsid gives each launch graph its own process group for reliable cleanup.
   setsid ros2 launch my_robot_description display.launch.py \
-    world:="${world_name}" gui:=false seed:="${seed}" > "${sim_log}" 2>&1 &
+    world:="${world_name}" gui:="${GUI}" seed:="${seed}" > "${sim_log}" 2>&1 &
   local simulation_pid=$!
   ACTIVE_SIMULATION_PID="${simulation_pid}"
 

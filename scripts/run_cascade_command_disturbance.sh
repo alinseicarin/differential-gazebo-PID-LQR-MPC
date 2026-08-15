@@ -7,6 +7,9 @@
 #
 # Usage inside the development container:
 #   bash scripts/run_cascade_command_disturbance.sh [result_directory]
+# To use a complete alternative benchmark track:
+#   DISTURBANCE_TRACK_PATH=/path/to/track_5_figure_eight.csv \
+#     bash scripts/run_cascade_command_disturbance.sh [result_directory]
 #
 # Set DISTURBANCE_GUI=false for an automated commissioning run. The default is
 # true so the final test is visible in Gazebo and RViz.
@@ -25,7 +28,7 @@ GUI="${DISTURBANCE_GUI:-true}"
 FAULT_START_DELAY="${FAULT_START_DELAY:-5.0}"
 FAULT_DURATION="${FAULT_DURATION:-1.0}"
 ANGULAR_VELOCITY_BIAS="${ANGULAR_VELOCITY_BIAS:-0.6}"
-RECOVERY_CTE_THRESHOLD="${RECOVERY_CTE_THRESHOLD:-0.005}"
+RECOVERY_CTE_THRESHOLD="${RECOVERY_CTE_THRESHOLD:-0.010}"
 RECOVERY_HEADING_THRESHOLD="${RECOVERY_HEADING_THRESHOLD:-0.01}"
 GAZEBO_SEED="${DISTURBANCE_GAZEBO_SEED:-42}"
 SETTLING_SIM_TIME="${DISTURBANCE_SETTLING_TIME:-2.0}"
@@ -34,8 +37,9 @@ SETTLING_ANGULAR_THRESHOLD="${DISTURBANCE_SETTLING_ANGULAR_THRESHOLD:-0.02}"
 
 CONFIG_PATH="${DISTURBANCE_CONFIG_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/config/pid_cascade.yaml}"
 INSTALLED_STRAIGHT="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_1_straight.csv"
-TRACK_PATH="${RESULT_DIR}/track_straight_5m.csv"
-TRACK_POINT_COUNT="${DISTURBANCE_TRACK_POINTS:-101}"
+TRACK_SOURCE="${DISTURBANCE_TRACK_PATH:-${INSTALLED_STRAIGHT}}"
+TRACK_PATH="${RESULT_DIR}/track_under_test.csv"
+TRACK_POINT_COUNT="${DISTURBANCE_TRACK_POINTS:-}"
 CONTROLLER_CSV="${RESULT_DIR}/cascade_controller.csv"
 APPLIED_COMMAND_CSV="${RESULT_DIR}/applied_commands.csv"
 GROUND_TRUTH_CSV="${RESULT_DIR}/ground_truth_trajectory.csv"
@@ -44,13 +48,29 @@ SIM_LOG="${RESULT_DIR}/simulation.log"
 CONTROL_GRAPH_LOG="${RESULT_DIR}/controller_and_injector.log"
 
 mkdir -p "${RESULT_DIR}"
-if ! [[ "${TRACK_POINT_COUNT}" =~ ^[0-9]+$ ]] || [[ "${TRACK_POINT_COUNT}" -lt 2 ]]; then
-  echo "DISTURBANCE_TRACK_POINTS must be an integer greater than one"
+if [[ ! -f "${TRACK_SOURCE}" ]]; then
+  echo "Disturbance track does not exist: ${TRACK_SOURCE}"
   exit 2
 fi
-# The default 101 points reproduce the 5 m nominal straight. Longer constant-
-# bias diagnostics can select more points without changing the installed track.
-head -n "${TRACK_POINT_COUNT}" "${INSTALLED_STRAIGHT}" > "${TRACK_PATH}"
+
+if [[ -n "${TRACK_POINT_COUNT}" ]]; then
+  if ! [[ "${TRACK_POINT_COUNT}" =~ ^[0-9]+$ ]] ||
+    [[ "${TRACK_POINT_COUNT}" -lt 2 ]]
+  then
+    echo "DISTURBANCE_TRACK_POINTS must be an integer greater than one"
+    exit 2
+  fi
+  # An explicit point count supports shortened or extended straight-line
+  # diagnostics while retaining the same source file.
+  head -n "${TRACK_POINT_COUNT}" "${TRACK_SOURCE}" > "${TRACK_PATH}"
+elif [[ "${TRACK_SOURCE}" == "${INSTALLED_STRAIGHT}" ]]; then
+  # Preserve the historical default: the first 101 points form a 5 m line.
+  head -n 101 "${TRACK_SOURCE}" > "${TRACK_PATH}"
+else
+  # Alternative tracks such as the circle or figure eight are copied in full;
+  # silently truncating them would change the requested benchmark geometry.
+  cp "${TRACK_SOURCE}" "${TRACK_PATH}"
+fi
 
 ACTIVE_SIMULATION_PID=""
 ACTIVE_CONTROL_GRAPH_PID=""
@@ -208,8 +228,12 @@ then
 fi
 
 # Recovery requires ten consecutive ground-truth samples with cross-track error
-# below 5 mm and path-heading error below 0.01 rad by default. Absolute Gazebo
-# timestamps align the evaluator data with the actual downstream fault window.
+# below 1 cm and path-heading error below 0.01 rad by default. The 1 cm spatial
+# band is fixed at roughly twice the largest terminal CTE measured in the
+# repeated nominal straight-line commissioning runs; the former 5 mm band was
+# narrower than the nominal ground-truth/localization residual in two of three
+# runs and could falsely label an otherwise settled response as unrecovered.
+# Absolute Gazebo timestamps align evaluation with the downstream fault window.
 awk -F, \
   -v fault_start="${fault_start}" -v fault_end="${fault_end}" \
   -v fault_start_stamp="${fault_start_stamp}" -v fault_end_stamp="${fault_end_stamp}" \

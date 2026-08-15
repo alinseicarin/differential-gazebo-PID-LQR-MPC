@@ -5,12 +5,35 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    SetEnvironmentVariable,
+)
 from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
     """Construct the complete simulation and state-estimation launch graph."""
+    # Desktop containers can inherit XDG_RUNTIME_DIR=/run/user/<uid> even when
+    # that directory was not mounted from the host. Qt then tries to create it
+    # below the root-owned /run/user directory: RViz may continue with a
+    # warning, while Gazebo Classic's gzclient exits before opening a window.
+    # Give both GUI processes a private, writable runtime directory in /tmp.
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR', '')
+    if not (
+        runtime_dir
+        and os.path.isdir(runtime_dir)
+        and os.access(runtime_dir, os.W_OK)
+    ):
+        runtime_dir = os.path.join('/tmp', f'robotics-runtime-{os.getuid()}')
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+    runtime_dir_env = SetEnvironmentVariable(
+        name='XDG_RUNTIME_DIR',
+        value=runtime_dir,
+    )
+
     # Resolve installed assets through the ament index. This works for both
     # normal and --symlink-install builds without hard-coded workspace paths.
     pkg_path = get_package_share_directory('my_robot_description')
@@ -125,6 +148,7 @@ def generate_launch_description():
     # Launch actions start concurrently. Components with service/topic
     # dependencies wait internally for their required Gazebo/ROS interfaces.
     return LaunchDescription([
+        runtime_dir_env,
         world_arg,
         gui_arg,
         seed_arg,

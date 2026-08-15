@@ -23,6 +23,7 @@ def generate_launch_description():
         'evaluation_output_csv_path'
     )
     config_path = LaunchConfiguration('config_path')
+    reference_config_path = LaunchConfiguration('reference_config_path')
     use_sim_time = LaunchConfiguration('use_sim_time')
     fault_start_delay = LaunchConfiguration('fault_start_delay')
     fault_duration = LaunchConfiguration('fault_duration')
@@ -60,6 +61,13 @@ def generate_launch_description():
             description='Controller configuration, normally pid_cascade.yaml',
         ),
         DeclareLaunchArgument(
+            'reference_config_path',
+            default_value=PathJoinSubstitution([
+                package_share, 'config', 'trajectory_reference.yaml'
+            ]),
+            description='Common timed-reference configuration',
+        ),
+        DeclareLaunchArgument(
             'use_sim_time',
             default_value='true',
             description='Use Gazebo simulation time in both nodes',
@@ -67,7 +75,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'fault_start_delay',
             default_value='5.0',
-            description='Seconds after the first nominal command before fault',
+            description='Seconds after the synchronized experiment start before fault',
         ),
         DeclareLaunchArgument(
             'fault_duration',
@@ -94,6 +102,7 @@ def generate_launch_description():
             remappings=[('cmd_vel', 'cmd_vel_nominal')],
             parameters=[
                 config_path,
+                reference_config_path,
                 {
                     'csv_path': csv_path,
                     'output_csv_path': controller_output_csv_path,
@@ -137,11 +146,15 @@ def generate_launch_description():
             executable='trajectory_evaluator_node',
             name='trajectory_evaluator_node',
             output='screen',
-            parameters=[{
-                'csv_path': csv_path,
-                'output_csv_path': evaluation_output_csv_path,
-                'search_window': 20,
-                'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
-            }],
+            parameters=[
+                reference_config_path,
+                {
+                    'csv_path': csv_path,
+                    'output_csv_path': evaluation_output_csv_path,
+                    'use_sim_time': ParameterValue(
+                        use_sim_time, value_type=bool
+                    ),
+                },
+            ],
         ),
     ])

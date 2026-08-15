@@ -20,7 +20,7 @@ struct TrajectoryReferenceConfig
 
   /// Common tangential acceleration and braking bounds [m/s^2].
   double maximum_linear_acceleration{0.5};
-  double maximum_linear_deceleration{0.5};
+  double maximum_linear_deceleration{0.1};
 
   /// Bound used while constructing a feasible v_ref/omega_ref pair [rad/s].
   double maximum_reference_angular_velocity{1.5};

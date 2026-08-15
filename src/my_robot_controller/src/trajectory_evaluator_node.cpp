@@ -57,7 +57,7 @@ public:
     declare_parameter<double>("maximum_reference_curvature", 5.0);
     declare_parameter<double>("trajectory_spatial_step", 0.01);
     declare_parameter<double>("maximum_reference_linear_acceleration", 0.5);
-    declare_parameter<double>("maximum_reference_linear_deceleration", 0.5);
+    declare_parameter<double>("maximum_reference_linear_deceleration", 0.1);
     declare_parameter<double>("maximum_reference_angular_velocity", 1.5);
 
     const std::string path_file = get_parameter("csv_path").as_string();

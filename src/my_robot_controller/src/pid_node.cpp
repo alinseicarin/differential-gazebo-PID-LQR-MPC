@@ -41,13 +41,13 @@ PidNode::PidNode()
   declare_parameter<double>("cascade_longitudinal_ki", 0.05);
   declare_parameter<double>("cascade_longitudinal_kd", 0.05);
   declare_parameter<double>("cascade_longitudinal_integral_limit", 0.5);
-  declare_parameter<double>("cascade_cross_track_kp", 1.2);
+  declare_parameter<double>("cascade_cross_track_kp", 1.5);
   declare_parameter<double>("cascade_cross_track_ki", 0.0);
-  declare_parameter<double>("cascade_cross_track_kd", 0.15);
+  declare_parameter<double>("cascade_cross_track_kd", 0.20);
   declare_parameter<double>("cascade_cross_track_integral_limit", 0.5);
-  declare_parameter<double>("cascade_heading_kp", 2.5);
+  declare_parameter<double>("cascade_heading_kp", 3.0);
   declare_parameter<double>("cascade_heading_ki", 0.0);
-  declare_parameter<double>("cascade_heading_kd", 0.15);
+  declare_parameter<double>("cascade_heading_kd", 0.20);
   declare_parameter<double>("cascade_heading_integral_limit", 0.5);
   declare_parameter<double>("cascade_max_heading_correction", 0.7);
 
@@ -65,7 +65,8 @@ PidNode::PidNode()
   declare_parameter<double>("maximum_reference_curvature", 5.0);
   declare_parameter<double>("trajectory_spatial_step", 0.01);
   declare_parameter<double>("maximum_reference_linear_acceleration", 0.5);
-  declare_parameter<double>("maximum_reference_linear_deceleration", 0.5);
+  declare_parameter<double>("maximum_reference_linear_deceleration", 0.1);
+  declare_parameter<double>("maximum_reference_angular_velocity", 1.5);
   declare_parameter<double>("nominal_control_frequency", 30.0);
   declare_parameter<double>("max_control_dt", 0.2);
   declare_parameter<double>("goal_tolerance", 0.08);
@@ -82,7 +83,9 @@ PidNode::PidNode()
   const auto lookahead = get_parameter("lookahead_points").as_int();
   const auto search_window = get_parameter("search_window").as_int();
   const double frequency = get_parameter("nominal_control_frequency").as_double();
-  if (lookahead < 1 || search_window < 1 || frequency <= 0.0) {
+  if (lookahead < 1 || search_window < 1 ||
+    !std::isfinite(frequency) || frequency <= 0.0)
+  {
     throw std::runtime_error(
             "lookahead_points, search_window, and nominal_control_frequency must be positive");
   }
@@ -108,10 +111,13 @@ PidNode::PidNode()
 
   // Zero or negative values would make timing, completion, or clamping
   // undefined, so reject the entire configuration before ROS I/O starts.
-  if (max_control_dt_ <= 0.0 || goal_tolerance_ <= 0.0 ||
-    goal_heading_tolerance_ <= 0.0 ||
-    max_linear_velocity_ <= 0.0 || max_angular_velocity_ <= 0.0 ||
-    odom_timeout_ <= 0.0 || startup_settling_time_ < 0.0)
+  if (!std::isfinite(max_control_dt_) || max_control_dt_ <= 0.0 ||
+    !std::isfinite(goal_tolerance_) || goal_tolerance_ <= 0.0 ||
+    !std::isfinite(goal_heading_tolerance_) || goal_heading_tolerance_ <= 0.0 ||
+    !std::isfinite(max_linear_velocity_) || max_linear_velocity_ <= 0.0 ||
+    !std::isfinite(max_angular_velocity_) || max_angular_velocity_ <= 0.0 ||
+    !std::isfinite(odom_timeout_) || odom_timeout_ <= 0.0 ||
+    !std::isfinite(startup_settling_time_) || startup_settling_time_ < 0.0)
   {
     throw std::runtime_error(
             "Timing, tolerance, timeout, and velocity limits must be positive; "
@@ -184,7 +190,12 @@ PidNode::PidNode()
     get_parameter("maximum_reference_linear_acceleration").as_double();
   reference_config.maximum_linear_deceleration =
     get_parameter("maximum_reference_linear_deceleration").as_double();
-  reference_config.maximum_reference_angular_velocity = max_angular_velocity_;
+  reference_config.maximum_reference_angular_velocity =
+    get_parameter("maximum_reference_angular_velocity").as_double();
+  if (reference_config.maximum_reference_angular_velocity > max_angular_velocity_) {
+    throw std::runtime_error(
+            "Reference yaw-rate limit must not exceed the actuator yaw-rate limit");
+  }
   reference_manager_.configure(reference_config);
 
   const std::string csv_path = get_parameter("csv_path").as_string();
@@ -427,7 +438,6 @@ void PidNode::control_loop(double stamp_seconds, double dt)
   // 2. Prepare the mode-specific target and completion condition
   // -----------------------------------------------------------------------
   // The legacy lookahead mode remains available only as a historical baseline.
-  std::size_t target_index = reference.projection.closest_waypoint_index;
   double distance_error = reference.projection.distance_to_goal;
   double target_angle = reference.projection.path.heading;
   double target_heading_error = reference.projection.heading_error;
@@ -436,7 +446,8 @@ void PidNode::control_loop(double stamp_seconds, double dt)
     std::abs(reference.heading_error) <= goal_heading_tolerance_;
 
   if (controller_mode_ == ControllerMode::kLookahead) {
-    target_index = reference_manager_.lookahead_waypoint_index(lookahead_points_);
+    const std::size_t target_index =
+      reference_manager_.lookahead_waypoint_index(lookahead_points_);
     const my_robot_controller::Point2D & target = reference_manager_.waypoint(target_index);
     const double x_error = target.x - current_x_;
     const double y_error = target.y - current_y_;

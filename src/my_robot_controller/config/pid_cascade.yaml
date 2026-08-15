@@ -29,7 +29,7 @@ pid_node:
     # Prevent the outer loop from asking for more than about 40 degrees.
     cascade_max_heading_correction: 0.7
 
-    # Common reference-speed policy shared with future LQR and MPC controllers.
+    # Common reference-speed policy shared with the LQR and MPC controllers.
     search_window: 20
     reference_linear_velocity: 0.4
     curvature_speed_gain: 0.5
@@ -43,6 +43,7 @@ pid_node:
     # loses the sign of reverse velocity, so the reference must stop without
     # requiring a reverse terminal correction.
     maximum_reference_linear_deceleration: 0.1
+    maximum_reference_angular_velocity: 1.5
 
     # Timing, terminal condition, actuator limits, and watchdog safety.
     nominal_control_frequency: 30.0

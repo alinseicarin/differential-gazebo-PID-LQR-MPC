@@ -28,7 +28,7 @@ struct PathReferenceConfig
   double curvature_speed_gain{0.5};
 
   /// Remaining distance over which the common endpoint speed ramps to zero.
-  double endpoint_slowdown_distance{0.5};
+  double endpoint_slowdown_distance{0.0};
 
   /// Safety bound for curvature estimated at discontinuous polygon corners.
   double maximum_abs_curvature{5.0};

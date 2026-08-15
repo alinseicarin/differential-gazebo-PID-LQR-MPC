@@ -4,10 +4,10 @@
   <!-- Asset package containing the robot model, simulation, EKF, and RViz. -->
   <name>my_robot_description</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="alinsei@yahoo.com">ubuntu</maintainer>
-  <!-- Replace this placeholder after selecting the thesis project's license. -->
-  <license>TODO: License declaration</license>
+  <description>Gazebo model, sensors, state estimation, and worlds for a differential-drive robot.</description>
+  <maintainer email="alin.seicarin@gmail.com">Alin Seicarin</maintainer>
+  <!-- The project is distributed under the permissive Apache 2.0 license. -->
+  <license>Apache-2.0</license>
 
   <!-- CMake installs and exports the package's non-code resources. -->
   <buildtool_depend>ament_cmake</buildtool_depend>

@@ -26,3 +26,10 @@ __pycache__/
 # Editor and operating-system metadata unrelated to the robotics experiment.
 .vscode/
 .DS_Store
+*:Zone.Identifier
+
+# Thesis drafts, writing guidelines, course papers, and other local reference
+# material are kept outside version control. They may contain copyrighted or
+# institution-specific documents and are not required to build the software.
+docs/
+materiale_lqr/

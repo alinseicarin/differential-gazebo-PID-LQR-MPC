@@ -19,7 +19,9 @@ RUN groupadd --gid $USER_GID $USERNAME \
 RUN apt-get update && apt-get install -y \
     sudo \
     python3-pip \
+    python3-yaml \
     ros-humble-gazebo-ros-pkgs \
+    ros-humble-osqp-vendor \
     && rm -rf /var/lib/apt/lists/*
 
 # Passwordless sudo is convenient for rosdep and package installation inside a

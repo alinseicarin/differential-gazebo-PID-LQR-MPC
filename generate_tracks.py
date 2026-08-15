@@ -1,13 +1,56 @@
 """
 Generate deterministic, headerless x,y paths for controller benchmarks.
 
-Tracks use a nominal 5 cm waypoint spacing. They deliberately contain no header
-because the C++ path loader expects exactly two numeric columns on every row.
-Running this script replaces all seven track CSV files in the current directory.
+Straight and discontinuous-corner tracks use a 5 cm waypoint spacing. Smooth
+curves use a 1 cm spacing so their polygonal representation does not inject
+large artificial heading steps into the derivative term of a controller. The
+files deliberately contain no header because the C++ path loader expects
+exactly two numeric columns on every row. Running this script replaces all
+seven track CSV files in the current directory.
 """
 
 import math
 import csv
+
+
+STRAIGHT_SPACING = 0.05
+SMOOTH_TRACK_SPACING = 0.01
+COORDINATE_DECIMALS = 5
+
+
+def quantize_waypoint(waypoint):
+    """Apply exactly the coordinate quantization written to each CSV file."""
+    rounded = [round(coordinate, COORDINATE_DECIMALS) for coordinate in waypoint]
+    return tuple(0.0 if coordinate == 0.0 else coordinate for coordinate in rounded)
+
+
+def wrap_angle(angle):
+    """Return the shortest signed representation of an angle in radians."""
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def validate_smooth_track(name, waypoints):
+    """Reject a nominally smooth benchmark with artificial tangent steps."""
+    quantized = [quantize_waypoint(waypoint) for waypoint in waypoints]
+    headings = []
+    for start, end in zip(quantized, quantized[1:]):
+        delta_x = end[0] - start[0]
+        delta_y = end[1] - start[1]
+        if math.hypot(delta_x, delta_y) == 0.0:
+            raise ValueError(f'{name} contains a duplicate quantized waypoint')
+        headings.append(math.atan2(delta_y, delta_x))
+
+    initial_heading_error = abs(wrap_angle(headings[0]))
+    maximum_heading_step = max(
+        abs(wrap_angle(current - previous))
+        for previous, current in zip(headings, headings[1:])
+    )
+    if initial_heading_error > 0.02 or maximum_heading_step > 0.025:
+        raise ValueError(
+            f'{name} is not sufficiently smooth after CSV quantization: '
+            f'initial heading {initial_heading_error:.6f} rad, '
+            f'maximum step {maximum_heading_step:.6f} rad'
+        )
 
 
 def save_to_csv(filename, waypoints):
@@ -18,12 +61,10 @@ def save_to_csv(filename, waypoints):
         # whitespace to Git and creates noisy cross-platform diffs.
         writer = csv.writer(file, lineterminator='\n')
         for wp in waypoints:
-            # Millimetre precision is sufficient for the simulated robot while
-            # keeping diffs and manual inspection manageable. Normalize tiny
-            # floating-point remnants so closed tracks end at 0.0, not -0.0.
-            rounded = [round(coordinate, 3) for coordinate in wp]
-            cleaned = [0.0 if coordinate == 0.0 else coordinate for coordinate in rounded]
-            writer.writerow(cleaned)
+            # Ten-micrometre precision prevents coordinate quantization from
+            # recreating visible tangent steps on the 1 cm smooth-track grid.
+            # Normalize tiny remnants so closed tracks end at 0.0, not -0.0.
+            writer.writerow(quantize_waypoint(wp))
     print(f"Successfully generated: {filename} ({len(waypoints)} waypoints)")
 
 
@@ -31,16 +72,19 @@ def save_to_csv(filename, waypoints):
 # A 20 m X-axis path isolates acceleration, steady tracking, and final stopping.
 track_1 = []
 for i in range(401):  # 0 to 400
-    x = i * 0.05      # 5cm steps
+    x = i * STRAIGHT_SPACING
     y = 0.0
     track_1.append((x, y))
 
 # --- TRACK 2: Sinusoid / continuous-curvature tracking ----------------------
-# y=sin(x) repeatedly changes steering direction without curvature jumps.
+# y=1-cos(x) repeatedly changes steering direction without curvature jumps and
+# has zero initial slope. The latter makes this a curvature-tracking benchmark,
+# rather than accidentally combining it with the dedicated heading-capture test.
 track_2 = []
-for i in range(101):
-    x = i * 0.05
-    y = math.sin(x)  # Smooth curve
+curve_segment_count = round(5.0 / SMOOTH_TRACK_SPACING)
+for i in range(curve_segment_count + 1):
+    x = i * 5.0 / curve_segment_count
+    y = 1.0 - math.cos(x)
     track_2.append((x, y))
 
 # --- TRACK 3: Right-angle / discontinuous-curvature stress test -------------
@@ -64,7 +108,9 @@ for i in range(1, 61):
 # This parameterization starts at the origin with a +X tangent, matching the
 # robot's spawn pose, and returns exactly to the origin after one revolution.
 circle_radius = 1.0
-circle_segments = round(2.0 * math.pi * circle_radius / 0.05)
+circle_segments = round(
+    2.0 * math.pi * circle_radius / SMOOTH_TRACK_SPACING
+)
 track_4 = []
 for i in range(circle_segments + 1):
     angle = 2.0 * math.pi * i / circle_segments
@@ -79,7 +125,9 @@ for i in range(circle_segments + 1):
 # the crossing even though curvature changes sign. The limited forward waypoint
 # search must keep the controller on the correct branch at the shared point.
 figure_eight_radius = 0.75
-lobe_segments = round(2.0 * math.pi * figure_eight_radius / 0.05)
+lobe_segments = round(
+    2.0 * math.pi * figure_eight_radius / SMOOTH_TRACK_SPACING
+)
 track_5 = []
 
 # Upper lobe: origin -> upper circle -> origin.
@@ -115,6 +163,9 @@ track_7 = [(0.0, 0.0), (diagonal_endpoint, diagonal_endpoint)]
 # Avoid rewriting data merely by importing this module from another script.
 if __name__ == '__main__':
     print("Generating High-Resolution Benchmark Tracks...")
+    validate_smooth_track('track_2_curve', track_2)
+    validate_smooth_track('track_4_circle', track_4)
+    validate_smooth_track('track_5_figure_eight', track_5)
     save_to_csv('track_1_straight.csv', track_1)
     save_to_csv('track_2_curve.csv', track_2)
     save_to_csv('track_3_corner.csv', track_3)

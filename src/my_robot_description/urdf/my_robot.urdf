@@ -76,8 +76,11 @@
     <!-- Left drive wheel. The cylinder is rotated so its original z-axis lies
          along the robot's lateral y-axis; the joint then spins continuously. -->
     <joint name="left_wheel_joint" type="continuous">
-        <!-- Match the force limit imposed by gazebo_ros_diff_drive below. -->
-        <limit effort="20.0" velocity="10.0"/>
+        <!-- Match the force limit imposed by gazebo_ros_diff_drive below. The
+             13 rad/s joint limit exceeds the largest wheel speed admitted by
+             the common body-command box: (1 + 1.5*0.35/2)/0.1 = 12.625 rad/s.
+             It therefore avoids an undeclared wheel-level saturation. -->
+        <limit effort="20.0" velocity="13.0"/>
         <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="left_wheel"/>
@@ -109,7 +112,7 @@
     <!-- Mirrored right joint. The reversed axis keeps positive wheel rotation
          consistent with forward robot motion after the opposite cylinder roll. -->
     <joint name="right_wheel_joint" type="continuous">
-        <limit effort="20.0" velocity="10.0"/>
+        <limit effort="20.0" velocity="13.0"/>
         <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="right_wheel"/>

@@ -91,7 +91,7 @@ private:
   // loop, both contained in a ROS-independent, unit-tested component.
   my_robot_controller::CascadedPidController cascaded_pid_;
 
-  // This policy is deliberately outside every controller. LQR and MPC will
+  // This policy is deliberately outside every controller. PID, LQR, and MPC
   // reuse it so both velocity corrections receive the same feedforward and limits.
   my_robot_controller::MotionCommandPolicy motion_command_policy_;
   ControllerMode controller_mode_{ControllerMode::kCascade};

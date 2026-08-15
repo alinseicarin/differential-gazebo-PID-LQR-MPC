@@ -1,0 +1,20 @@
+# Authoritative timed-reference settings for every controller and evaluator.
+#
+# Keeping these parameters in one file prevents a controller and the
+# ground-truth evaluator from reconstructing different time laws for the same
+# geometric track. Controller-specific YAML files may retain matching values
+# for standalone use, but launch files load this file last, so it is the source
+# of truth in thesis experiments.
+/**:
+  ros__parameters:
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.0
+    maximum_reference_curvature: 5.0
+    trajectory_spatial_step: 0.01
+    maximum_reference_linear_acceleration: 0.5
+    maximum_reference_linear_deceleration: 0.1
+    # The virtual robot never requests a yaw rate outside the common actuator
+    # interval. Controllers and the independent evaluator load this same value.
+    maximum_reference_angular_velocity: 1.5
