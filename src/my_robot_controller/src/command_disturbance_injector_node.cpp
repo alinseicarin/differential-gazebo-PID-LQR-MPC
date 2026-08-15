@@ -9,8 +9,35 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+namespace
+{
+std::vector<double> parse_start_delays(const std::string & text)
+{
+  std::vector<double> starts;
+  if (text.empty()) {
+    return starts;
+  }
+
+  std::stringstream stream(text);
+  std::string token;
+  while (std::getline(stream, token, ';')) {
+    std::stringstream token_stream(token);
+    double start = 0.0;
+    char trailing = '\0';
+    if (!(token_stream >> start) || (token_stream >> trailing)) {
+      throw std::runtime_error(
+              "fault_start_delays must contain semicolon-separated numbers");
+    }
+    starts.push_back(start);
+  }
+  return starts;
+}
+}  // namespace
 
 /// ROS adapter placed between a controller and the differential-drive plugin.
 ///
@@ -26,7 +53,9 @@ public:
   : Node("command_disturbance_injector")
   {
     declare_parameter<double>("fault_start_delay", 5.0);
+    declare_parameter<std::string>("fault_start_delays", "");
     declare_parameter<double>("fault_duration", 0.5);
+    declare_parameter<bool>("fault_persistent", false);
     declare_parameter<bool>("fault_enabled", true);
     declare_parameter<double>("linear_velocity_bias", 0.0);
     declare_parameter<double>("angular_velocity_bias", 0.5);
@@ -43,7 +72,11 @@ public:
     my_robot_controller::CommandDisturbanceConfig config;
     config.enabled = get_parameter("fault_enabled").as_bool();
     config.start_delay = get_parameter("fault_start_delay").as_double();
+    const std::string repeated_starts =
+      get_parameter("fault_start_delays").as_string();
+    config.start_delays = parse_start_delays(repeated_starts);
     config.duration = get_parameter("fault_duration").as_double();
+    config.persistent = get_parameter("fault_persistent").as_bool();
     config.linear_velocity_bias = get_parameter("linear_velocity_bias").as_double();
     config.angular_velocity_bias = get_parameter("angular_velocity_bias").as_double();
     config.left_wheel_effectiveness =
@@ -77,7 +110,8 @@ public:
       "applied_angular_command,fault_active,stamp,delay_source_linear_command,"
       "delay_source_angular_command,delay_source_time,configured_command_delay,"
       "nominal_left_wheel_velocity,nominal_right_wheel_velocity,"
-      "effective_left_wheel_velocity,effective_right_wheel_velocity\n";
+      "effective_left_wheel_velocity,effective_right_wheel_velocity,"
+      "fault_window_index\n";
 
     applied_command_publisher_ =
       create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
@@ -103,8 +137,10 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Command fault enabled=%s, start=%.3f s, duration=%.3f s, "
-      "bias=(%.3f m/s, %.3f rad/s), wheel effectiveness=(%.3f, %.3f), delay=%.3f s",
+      "repeated_starts='%s', persistent=%s, bias=(%.3f m/s, %.3f rad/s), "
+      "wheel effectiveness=(%.3f, %.3f), delay=%.3f s",
       config.enabled ? "true" : "false", config.start_delay, config.duration,
+      repeated_starts.c_str(), config.persistent ? "true" : "false",
       config.linear_velocity_bias, config.angular_velocity_bias,
       config.left_wheel_effectiveness, config.right_wheel_effectiveness,
       command_delay_.delay());
@@ -184,20 +220,7 @@ private:
     // schedule. Forward them transparently and start both scheduling and CSV
     // time only from the controller's common experiment-start announcement.
     if (!experiment_started_ || stamp_seconds < experiment_start_stamp_seconds_) {
-      const auto & config = disturbance_.config();
-      const double inactive_time = config.start_delay + config.duration + 1.0;
-      try {
-        const auto output = disturbance_.apply(
-          message->linear.x, message->angular.z, inactive_time);
-        geometry_msgs::msg::Twist applied_message = *message;
-        applied_message.linear.x = output.applied_linear_velocity;
-        applied_message.angular.z = output.applied_angular_velocity;
-        applied_command_publisher_->publish(applied_message);
-      } catch (const std::exception & error) {
-        RCLCPP_ERROR(get_logger(), "Invalid nominal command: %s", error.what());
-        publish_stop();
-        return;
-      }
+      applied_command_publisher_->publish(*message);
 
       input_received_ = true;
       stop_sent_ = false;
@@ -237,12 +260,13 @@ private:
       command_delay_.delay() << ',' << output.nominal_left_wheel_velocity << ',' <<
       output.nominal_right_wheel_velocity << ',' <<
       output.effective_left_wheel_velocity << ',' <<
-      output.effective_right_wheel_velocity << '\n';
+      output.effective_right_wheel_velocity << ',' << output.active_window_index << '\n';
 
     if (output.fault_active != previous_fault_active_) {
       if (output.fault_active) {
         RCLCPP_WARN(
-          get_logger(), "Command fault started at %.3f s", elapsed_time);
+          get_logger(), "Command fault started at %.3f s (window %d)",
+          elapsed_time, output.active_window_index + 1);
       } else {
         RCLCPP_INFO(get_logger(), "Command fault ended at %.3f s", elapsed_time);
       }

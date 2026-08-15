@@ -55,7 +55,9 @@ TRACK_PATH="${RESULT_DIR}/track_under_test.csv"
 COMMAND_FAULT_ENABLED="${COMMAND_FAULT_ENABLED:-false}"
 FEEDBACK_FAULT_ENABLED="${FEEDBACK_FAULT_ENABLED:-false}"
 FAULT_START_DELAY="${FAULT_START_DELAY:-5.0}"
+FAULT_START_DELAYS="${FAULT_START_DELAYS:-}"
 FAULT_DURATION="${FAULT_DURATION:-1.0}"
+FAULT_PERSISTENT="${FAULT_PERSISTENT:-false}"
 LINEAR_VELOCITY_BIAS="${LINEAR_VELOCITY_BIAS:-0.0}"
 ANGULAR_VELOCITY_BIAS="${ANGULAR_VELOCITY_BIAS:-0.0}"
 LEFT_WHEEL_EFFECTIVENESS="${LEFT_WHEEL_EFFECTIVENESS:-1.0}"
@@ -67,6 +69,14 @@ ODOMETRY_YAW_BIAS="${ODOMETRY_YAW_BIAS:-0.0}"
 POSITION_NOISE_STDDEV="${POSITION_NOISE_STDDEV:-0.0}"
 YAW_NOISE_STDDEV="${YAW_NOISE_STDDEV:-0.0}"
 NOISE_SEED="${PERTURBATION_NOISE_SEED:-2026}"
+
+# ROS 2 launch treats `name:=` as a malformed command-line argument.  Keep the
+# repeated-window parameter optional so legacy single-window scenarios can use
+# the node's empty-string default without emitting an invalid launch token.
+FAULT_SCHEDULE_ARGS=()
+if [[ -n "${FAULT_START_DELAYS}" ]]; then
+  FAULT_SCHEDULE_ARGS+=(fault_start_delays:="${FAULT_START_DELAYS}")
+fi
 
 CONTROLLER_CSV="${RESULT_DIR}/controller.csv"
 COMMAND_CSV="${RESULT_DIR}/applied_commands.csv"
@@ -152,7 +162,9 @@ setsid ros2 launch my_robot_controller "${CONTROLLER_LAUNCH}" \
   command_fault_enabled:="${COMMAND_FAULT_ENABLED}" \
   feedback_fault_enabled:="${FEEDBACK_FAULT_ENABLED}" \
   fault_start_delay:="${FAULT_START_DELAY}" \
+  "${FAULT_SCHEDULE_ARGS[@]}" \
   fault_duration:="${FAULT_DURATION}" \
+  fault_persistent:="${FAULT_PERSISTENT}" \
   linear_velocity_bias:="${LINEAR_VELOCITY_BIAS}" \
   angular_velocity_bias:="${ANGULAR_VELOCITY_BIAS}" \
   left_wheel_effectiveness:="${LEFT_WHEEL_EFFECTIVENESS}" \
@@ -210,8 +222,8 @@ then
 fi
 
 {
-  echo "scenario,fault_domain,fault_start,fault_duration,track_complete,command_fault_enabled,feedback_fault_enabled,angular_bias,left_wheel_effectiveness,right_wheel_effectiveness,command_delay,position_noise_stddev,yaw_noise_stddev,noise_seed,gazebo_seed,controller_family,mpc_horizon_steps,controller_config_sha256,reference_config_sha256,track_sha256"
-  echo "${SCENARIO_NAME},${FAULT_DOMAIN},${FAULT_START_DELAY},${FAULT_DURATION},${complete},${COMMAND_FAULT_ENABLED},${FEEDBACK_FAULT_ENABLED},${ANGULAR_VELOCITY_BIAS},${LEFT_WHEEL_EFFECTIVENESS},${RIGHT_WHEEL_EFFECTIVENESS},${COMMAND_DELAY},${POSITION_NOISE_STDDEV},${YAW_NOISE_STDDEV},${NOISE_SEED},${GAZEBO_SEED},${CONTROLLER_FAMILY},${MPC_HORIZON_STEPS},${CONFIG_SHA256},${REFERENCE_CONFIG_SHA256},${TRACK_SHA256}"
+  echo "scenario,fault_domain,fault_start,fault_duration,track_complete,command_fault_enabled,feedback_fault_enabled,angular_bias,left_wheel_effectiveness,right_wheel_effectiveness,command_delay,position_noise_stddev,yaw_noise_stddev,noise_seed,gazebo_seed,controller_family,mpc_horizon_steps,controller_config_sha256,reference_config_sha256,track_sha256,fault_start_delays,fault_persistent,odometry_x_bias,odometry_y_bias,odometry_yaw_bias"
+  echo "${SCENARIO_NAME},${FAULT_DOMAIN},${FAULT_START_DELAY},${FAULT_DURATION},${complete},${COMMAND_FAULT_ENABLED},${FEEDBACK_FAULT_ENABLED},${ANGULAR_VELOCITY_BIAS},${LEFT_WHEEL_EFFECTIVENESS},${RIGHT_WHEEL_EFFECTIVENESS},${COMMAND_DELAY},${POSITION_NOISE_STDDEV},${YAW_NOISE_STDDEV},${NOISE_SEED},${GAZEBO_SEED},${CONTROLLER_FAMILY},${MPC_HORIZON_STEPS},${CONFIG_SHA256},${REFERENCE_CONFIG_SHA256},${TRACK_SHA256},${FAULT_START_DELAYS},${FAULT_PERSISTENT},${ODOMETRY_X_BIAS},${ODOMETRY_Y_BIAS},${ODOMETRY_YAW_BIAS}"
 } > "${METADATA_CSV}"
 
 if [[ "${complete}" -eq 1 ]]; then

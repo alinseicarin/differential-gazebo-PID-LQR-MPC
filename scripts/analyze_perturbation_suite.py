@@ -41,6 +41,41 @@ def interpolate(times, values, query):
     return values[before] + fraction * (values[upper] - values[before])
 
 
+def enabled(metadata, key):
+    return metadata.get(key, '').strip().lower() == 'true'
+
+
+def configured_fault_starts(metadata):
+    repeated = metadata.get('fault_start_delays', '').strip()
+    if repeated:
+        return [float(value) for value in repeated.split(';')]
+    return [float(metadata['fault_start'])]
+
+
+def fault_windows(metadata, rows):
+    """Return the physical fault intervals declared for one scenario."""
+    if not (
+            enabled(metadata, 'command_fault_enabled') or
+            enabled(metadata, 'feedback_fault_enabled')):
+        return [], False
+    persistent = enabled(metadata, 'fault_persistent')
+    duration = float(metadata['fault_duration'])
+    finite_times = [number(row, 'time') for row in rows]
+    finite_times = [value for value in finite_times if math.isfinite(value)]
+    data_end = max(finite_times, default=0.0)
+    windows = []
+    for start in configured_fault_starts(metadata):
+        windows.append((start, data_end if persistent else start + duration))
+    return windows, persistent
+
+
+def window_index(time, windows):
+    for index, (start, end) in enumerate(windows):
+        if start <= time < end:
+            return index
+    return None
+
+
 def time_rms(rows, key):
     integral = 0.0
     duration = 0.0
@@ -62,36 +97,46 @@ def time_rms(rows, key):
     return math.sqrt(integral / duration) if duration > 0.0 else math.nan
 
 
-def active_window_metrics(rows, start, end):
+def active_window_metrics(rows, windows):
     active = [
         row for row in rows
-        if start <= number(row, 'time') < end
+        if window_index(number(row, 'time'), windows) is not None
     ]
-    tail_start = max(start, end - 2.0)
+    if not windows:
+        return math.nan, math.nan
+    final_start, final_end = windows[-1]
+    finite_times = [number(row, 'time') for row in rows]
+    finite_times = [value for value in finite_times if math.isfinite(value)]
+    final_end = min(final_end, max(finite_times, default=final_end))
+    tail_start = max(final_start, final_end - 2.0)
     tail = [
         abs(number(row, 'true_cross_track_error')) for row in active
-        if number(row, 'time') >= tail_start and
+        if tail_start <= number(row, 'time') < final_end and
         math.isfinite(number(row, 'true_cross_track_error'))
     ]
 
     iae = 0.0
     previous_time = None
     previous_value = None
+    previous_window = None
     for row in active:
         current_time = number(row, 'time')
         current_value = abs(number(row, 'true_cross_track_error'))
         if not math.isfinite(current_time) or not math.isfinite(current_value):
             continue
-        if previous_time is not None and current_time > previous_time:
+        current_window = window_index(current_time, windows)
+        if (previous_time is not None and current_time > previous_time and
+                current_window == previous_window):
             iae += 0.5 * (previous_value + current_value) * (
                 current_time - previous_time
             )
         previous_time = current_time
         previous_value = current_value
+        previous_window = current_window
     return iae, sum(tail) / len(tail) if tail else math.nan
 
 
-def baseline_deviation(rows, baseline_rows, fault_start, fault_end):
+def baseline_deviation(rows, baseline_rows, windows, persistent):
     baseline_times = [number(row, 'time') for row in baseline_rows]
     baseline_cte = [number(row, 'true_cross_track_error') for row in baseline_rows]
     baseline_heading = [number(row, 'true_path_heading_error') for row in baseline_rows]
@@ -111,29 +156,51 @@ def baseline_deviation(rows, baseline_rows, fault_start, fault_end):
                 abs(wrap_angle(heading - base_heading)),
             ))
 
-    # Incremental peaks must not include ordinary run-to-run differences that
-    # occur before the disturbance has actually started.
-    affected = [item for item in deviations if item[0] >= fault_start]
-    peak_cte = max((item[1] for item in affected), default=math.nan)
-    peak_heading = max((item[2] for item in affected), default=math.nan)
+    details = []
+    for index, (start, end) in enumerate(windows):
+        next_start = windows[index + 1][0] if index + 1 < len(windows) else math.inf
+        affected = [
+            item for item in deviations
+            if start <= item[0] < next_start
+        ]
+        peak_cte = max((item[1] for item in affected), default=math.nan)
+        peak_heading = max((item[2] for item in affected), default=math.nan)
 
-    # Recovery means one complete second continuously inside a band around the
-    # controller's own nominal response. Absolute RMS metrics remain separate,
-    # so a poor nominal controller cannot appear good merely by returning to it.
-    stable_start = None
-    recovery = math.nan
-    for time, cte_delta, heading_delta in deviations:
-        if time < fault_end:
-            continue
-        if cte_delta <= 0.01 and heading_delta <= 0.02:
-            if stable_start is None:
-                stable_start = time
-            if time - stable_start >= 1.0:
-                recovery = stable_start - fault_end
-                break
-        else:
+        # Recovery means one complete second continuously inside a band around
+        # the nominal response. Each pulse must recover before the next pulse.
+        recovery = math.nan
+        if not persistent:
             stable_start = None
-    return peak_cte, peak_heading, recovery
+            for time, cte_delta, heading_delta in deviations:
+                if time < end or time >= next_start:
+                    continue
+                if cte_delta <= 0.01 and heading_delta <= 0.02:
+                    if stable_start is None:
+                        stable_start = time
+                    if time - stable_start >= 1.0:
+                        recovery = stable_start - end
+                        break
+                else:
+                    stable_start = None
+        details.append({
+            'window_index': index + 1,
+            'fault_start_s': start,
+            'fault_end_s': end,
+            'persistent': int(persistent),
+            'peak_incremental_cte_vs_nominal_m': peak_cte,
+            'peak_incremental_heading_vs_nominal_rad': peak_heading,
+            'recovery_s': recovery,
+        })
+
+    peak_cte = max((item['peak_incremental_cte_vs_nominal_m']
+                    for item in details), default=math.nan)
+    peak_heading = max((item['peak_incremental_heading_vs_nominal_rad']
+                        for item in details), default=math.nan)
+    recoveries = [item['recovery_s'] for item in details
+                  if math.isfinite(item['recovery_s'])]
+    all_recovered = bool(details) and len(recoveries) == len(details)
+    recovery = max(recoveries) if all_recovered else math.nan
+    return peak_cte, peak_heading, recovery, details
 
 
 def command_metrics(path):
@@ -190,13 +257,23 @@ def noise_metrics(path):
     return position_rms, yaw_rms
 
 
-def enabled(metadata, key):
-    return metadata.get(key, '').strip().lower() == 'true'
+def fault_transitions(rows):
+    starts = []
+    ends = []
+    previous_active = False
+    for row in rows:
+        active = number(row, 'fault_active') == 1.0
+        if active and not previous_active:
+            starts.append(row)
+        elif previous_active and not active:
+            ends.append(row)
+        previous_active = active
+    return starts, ends
 
 
 def audit_fault_timing(
         scenario, metadata, truth_rows, command_rows, odometry_rows):
-    """Verify that every injected fault uses the evaluator's time origin."""
+    """Verify schedule, shared time origin, and nonzero reference motion."""
     issues = []
     origins = [
         number(row, 'truth_stamp') - number(row, 'time')
@@ -214,56 +291,75 @@ def audit_fault_timing(
             f'(spread {origins[-1] - origins[0]:.6g} s)'
         )
 
-    expected_start = float(metadata['fault_start'])
+    expected_starts = configured_fault_starts(metadata)
+    duration = float(metadata['fault_duration'])
+    persistent = enabled(metadata, 'fault_persistent')
     tolerance = 0.075  # More than two 30 Hz samples, but far below 1 s.
-    command_active = [
-        row for row in command_rows if number(row, 'fault_active') == 1.0
-    ]
-    command_expected = enabled(metadata, 'command_fault_enabled')
-    if command_expected and not command_active:
-        issues.append(f'{scenario}: command fault was enabled but never active')
-    if not command_expected and command_active:
-        issues.append(f'{scenario}: command fault was active although disabled')
-    if command_active:
-        logged_start = number(command_active[0], 'time')
-        physical_start = (
-            number(command_active[0], 'stamp') - experiment_origin
-        )
-        if not math.isfinite(logged_start) or abs(logged_start - expected_start) > tolerance:
-            issues.append(
-                f'{scenario}: command CSV starts fault at {logged_start:.6g} s, '
-                f'expected {expected_start:.6g} s'
-            )
-        if not math.isfinite(physical_start) or abs(physical_start - expected_start) > tolerance:
-            issues.append(
-                f'{scenario}: command reaches Gazebo at experiment time '
-                f'{physical_start:.6g} s, expected {expected_start:.6g} s'
-            )
 
-    odometry_active = [
-        row for row in odometry_rows if number(row, 'fault_active') == 1.0
-    ]
+    def audit_stream(label, rows, expected):
+        starts, ends = fault_transitions(rows)
+        if not expected:
+            if starts:
+                issues.append(
+                    f'{scenario}: {label} fault was active although disabled'
+                )
+            return
+        if len(starts) != len(expected_starts):
+            issues.append(
+                f'{scenario}: {label} has {len(starts)} fault starts, '
+                f'expected {len(expected_starts)}'
+            )
+        for index, (row, expected_start) in enumerate(
+                zip(starts, expected_starts), start=1):
+            logged_start = number(row, 'time')
+            physical_start = number(row, 'stamp') - experiment_origin
+            if (not math.isfinite(logged_start) or
+                    abs(logged_start - expected_start) > tolerance):
+                issues.append(
+                    f'{scenario}: {label} window {index} starts at '
+                    f'{logged_start:.6g} s, expected {expected_start:.6g} s'
+                )
+            if (not math.isfinite(physical_start) or
+                    abs(physical_start - expected_start) > tolerance):
+                issues.append(
+                    f'{scenario}: {label} window {index} reaches its consumer '
+                    f'at {physical_start:.6g} s, expected {expected_start:.6g} s'
+                )
+        if not persistent:
+            if len(ends) != len(expected_starts):
+                issues.append(
+                    f'{scenario}: {label} has {len(ends)} fault ends, '
+                    f'expected {len(expected_starts)}'
+                )
+            for index, (row, expected_start) in enumerate(
+                    zip(ends, expected_starts), start=1):
+                logged_end = number(row, 'time')
+                expected_end = expected_start + duration
+                if (not math.isfinite(logged_end) or
+                        abs(logged_end - expected_end) > tolerance):
+                    issues.append(
+                        f'{scenario}: {label} window {index} ends at '
+                        f'{logged_end:.6g} s, expected {expected_end:.6g} s'
+                    )
+
+    command_expected = enabled(metadata, 'command_fault_enabled')
     feedback_expected = enabled(metadata, 'feedback_fault_enabled')
-    if feedback_expected and not odometry_active:
-        issues.append(f'{scenario}: feedback fault was enabled but never active')
-    if not feedback_expected and odometry_active:
-        issues.append(f'{scenario}: feedback fault was active although disabled')
-    if odometry_active:
-        logged_start = number(odometry_active[0], 'time')
-        physical_start = (
-            number(odometry_active[0], 'stamp') - experiment_origin
-        )
-        if not math.isfinite(logged_start) or abs(logged_start - expected_start) > tolerance:
-            issues.append(
-                f'{scenario}: odometry CSV starts fault at {logged_start:.6g} s, '
-                f'expected {expected_start:.6g} s'
-            )
-        if not math.isfinite(physical_start) or abs(physical_start - expected_start) > tolerance:
-            issues.append(
-                f'{scenario}: feedback fault reaches the controller at '
-                f'experiment time {physical_start:.6g} s, '
-                f'expected {expected_start:.6g} s'
-            )
+    audit_stream('command', command_rows, command_expected)
+    audit_stream('feedback', odometry_rows, feedback_expected)
+
+    if command_expected or feedback_expected:
+        for index, expected_start in enumerate(expected_starts, start=1):
+            sample = next((
+                row for row in truth_rows
+                if number(row, 'time') >= expected_start
+            ), None)
+            speed = number(sample, 'reference_linear_velocity') \
+                if sample is not None else math.nan
+            if not math.isfinite(speed) or abs(speed) <= 0.05:
+                issues.append(
+                    f'{scenario}: fault window {index} starts while reference '
+                    f'speed is {speed:.6g} m/s; expected active motion'
+                )
     return issues
 
 
@@ -312,6 +408,7 @@ def main():
     baseline_rows = read_rows(nominal_path)
 
     output_rows = []
+    window_rows = []
     audit_issues = []
     for scenario_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         metadata_path = scenario_dir / 'scenario_metadata.csv'
@@ -329,9 +426,7 @@ def main():
         rows = read_rows(truth_path)
         command_rows = read_rows(command_path)
         odometry_rows = read_rows(odometry_path)
-        start = float(metadata['fault_start'])
-        duration = float(metadata['fault_duration'])
-        end = start + duration
+        windows, persistent = fault_windows(metadata, rows)
         is_nominal = metadata['scenario'] == 'nominal'
         audit_issues.extend(audit_fault_timing(
             scenario_dir.name, metadata, rows, command_rows, odometry_rows
@@ -353,7 +448,8 @@ def main():
             abs(number(row, 'true_path_heading_error')) for row in rows
             if math.isfinite(number(row, 'true_path_heading_error'))
         ]
-        active_iae, active_tail_mean = active_window_metrics(rows, start, end)
+        active_iae, active_tail_mean = active_window_metrics(rows, windows)
+        details = []
         if is_nominal:
             peak_delta_cte = math.nan
             peak_delta_heading = math.nan
@@ -361,9 +457,20 @@ def main():
             active_iae = math.nan
             active_tail_mean = math.nan
         else:
-            peak_delta_cte, peak_delta_heading, recovery = baseline_deviation(
-                rows, baseline_rows, start, end
+            (
+                peak_delta_cte, peak_delta_heading, recovery, details,
+            ) = baseline_deviation(
+                rows, baseline_rows, windows, persistent
             )
+            for detail in details:
+                window_rows.append({
+                    'case': scenario_dir.name,
+                    'controller_family': metadata.get(
+                        'controller_family', 'pid'
+                    ),
+                    'scenario': metadata['scenario'],
+                    **detail,
+                })
         (
             max_angular, saturation_fraction, active_samples,
             normalized_command_activity,
@@ -375,6 +482,16 @@ def main():
             'controller_family': metadata.get('controller_family', 'pid'),
             'scenario': metadata['scenario'],
             'fault_domain': metadata['fault_domain'],
+            'fault_window_count': len(windows),
+            'recovered_window_count': sum(
+                math.isfinite(detail['recovery_s']) for detail in details
+            ),
+            'window_recovery_fraction': (
+                math.nan if persistent or not details else
+                sum(math.isfinite(detail['recovery_s']) for detail in details) /
+                len(details)
+            ),
+            'persistent_fault': int(persistent),
             'track_complete': int(metadata['track_complete']),
             'cte_rmse_m': time_rms(rows, 'true_cross_track_error'),
             'heading_rmse_rad': time_rms(rows, 'true_path_heading_error'),
@@ -390,8 +507,8 @@ def main():
             'angular_saturation_fraction': saturation_fraction,
             'normalized_command_activity': normalized_command_activity,
             'command_fault_active_samples': active_samples,
-            'injected_position_noise_rms_m': position_noise_rms,
-            'injected_yaw_noise_rms_rad': yaw_noise_rms,
+            'injected_position_perturbation_rms_m': position_noise_rms,
+            'injected_yaw_perturbation_rms_rad': yaw_noise_rms,
         })
 
     if not output_rows:
@@ -422,6 +539,19 @@ def main():
         for row in output_rows:
             writer.writerow({key: format_value(value) for key, value in row.items()})
 
+    window_summary_path = root / 'fault_window_summary.csv'
+    window_fields = (
+        'case', 'controller_family', 'scenario', 'window_index',
+        'fault_start_s', 'fault_end_s', 'persistent',
+        'peak_incremental_cte_vs_nominal_m',
+        'peak_incremental_heading_vs_nominal_rad', 'recovery_s',
+    )
+    with window_summary_path.open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=window_fields)
+        writer.writeheader()
+        for row in window_rows:
+            writer.writerow({key: format_value(row[key]) for key in window_fields})
+
     text_path = root / 'summary.txt'
     with text_path.open('w', encoding='utf-8') as stream:
         controller_families = sorted({
@@ -435,9 +565,14 @@ def main():
             'baseline; nominal-only directories may contain other tracks.\n'
         )
         stream.write(
-            'Recovery: first continuous 1 s interval after fault end with '
+            'Recovery for each finite window: first continuous 1 s interval '
+            'after fault end with '
             '|delta CTE| <= 0.01 m and |delta heading| <= 0.02 rad relative '
             'to the time-aligned nominal response of the same controller.\n'
+        )
+        stream.write(
+            'Persistent faults have no post-fault recovery by definition; '
+            'their active error and completion metrics remain valid.\n'
         )
         stream.write(
             'Absolute RMS and peak values use Gazebo ground truth and remain '
@@ -454,6 +589,7 @@ def main():
             )
 
     print(f'Wrote {summary_path}')
+    print(f'Wrote {window_summary_path}')
     print(f'Wrote {text_path}')
 
 

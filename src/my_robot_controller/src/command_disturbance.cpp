@@ -27,6 +27,22 @@ void CommandDisturbance::validate_config(const CommandDisturbanceConfig & config
   if (!std::isfinite(config.duration) || config.duration <= 0.0) {
     throw std::invalid_argument("Command-fault duration must be finite and positive");
   }
+  if (config.persistent && config.start_delays.size() > 1u) {
+    throw std::invalid_argument(
+            "A persistent command fault may have only one start time");
+  }
+  double previous_start = -config.duration;
+  for (const double start : config.start_delays) {
+    if (!std::isfinite(start) || start < 0.0) {
+      throw std::invalid_argument(
+              "Command-fault repeated start times must be finite and non-negative");
+    }
+    if (start + kScheduleTimeTolerance < previous_start + config.duration) {
+      throw std::invalid_argument(
+              "Command-fault windows must be ordered and non-overlapping");
+    }
+    previous_start = start;
+  }
   if (!std::isfinite(config.linear_velocity_bias) ||
     !std::isfinite(config.angular_velocity_bias))
   {
@@ -74,7 +90,8 @@ CommandDisturbanceOutput CommandDisturbance::apply(
   CommandDisturbanceOutput output;
   output.nominal_linear_velocity = nominal_linear_velocity;
   output.nominal_angular_velocity = nominal_angular_velocity;
-  output.fault_active = is_active(elapsed_time);
+  output.active_window_index = active_window_index(elapsed_time);
+  output.fault_active = output.active_window_index >= 0;
 
   // Convert the body command to equivalent wheel-ground velocities. Applying
   // effectiveness here emulates a weakened drive side while keeping the
@@ -122,12 +139,40 @@ CommandDisturbanceOutput CommandDisturbance::apply(
 
 bool CommandDisturbance::is_active(double elapsed_time) const
 {
+  return active_window_index(elapsed_time) >= 0;
+}
+
+int CommandDisturbance::active_window_index(double elapsed_time) const
+{
   if (!std::isfinite(elapsed_time) || elapsed_time < 0.0) {
     throw std::invalid_argument("Command-fault elapsed time must be finite and non-negative");
   }
-  return config_.enabled &&
-         elapsed_time + kScheduleTimeTolerance >= config_.start_delay &&
-         elapsed_time + kScheduleTimeTolerance < config_.start_delay + config_.duration;
+  if (!config_.enabled) {
+    return -1;
+  }
+
+  if (config_.start_delays.empty()) {
+    if (elapsed_time + kScheduleTimeTolerance < config_.start_delay) {
+      return -1;
+    }
+    if (config_.persistent ||
+      elapsed_time + kScheduleTimeTolerance < config_.start_delay + config_.duration)
+    {
+      return 0;
+    }
+    return -1;
+  }
+
+  for (std::size_t index = 0u; index < config_.start_delays.size(); ++index) {
+    const double start = config_.start_delays[index];
+    if (elapsed_time + kScheduleTimeTolerance >= start &&
+      (config_.persistent ||
+      elapsed_time + kScheduleTimeTolerance < start + config_.duration))
+    {
+      return static_cast<int>(index);
+    }
+  }
+  return -1;
 }
 
 const CommandDisturbanceConfig & CommandDisturbance::config() const

@@ -62,6 +62,49 @@ TEST(CommandDisturbance, DoesNotExtendFaultAtRoundedEndTimestamp)
   EXPECT_DOUBLE_EQ(output.applied_angular_velocity, -0.1);
 }
 
+TEST(CommandDisturbance, AppliesEachRepeatedFaultWindowAndReportsItsIndex)
+{
+  my_robot_controller::CommandDisturbanceConfig config;
+  config.start_delays = {1.0, 3.0, 5.0};
+  config.duration = 0.5;
+  config.angular_velocity_bias = 0.8;
+  my_robot_controller::CommandDisturbance disturbance(config);
+
+  const auto first = disturbance.apply(0.4, 0.1, 1.1);
+  const auto gap = disturbance.apply(0.4, 0.1, 2.0);
+  const auto second = disturbance.apply(0.4, 0.1, 3.1);
+  const auto third = disturbance.apply(0.4, 0.1, 5.1);
+
+  EXPECT_TRUE(first.fault_active);
+  EXPECT_EQ(first.active_window_index, 0);
+  EXPECT_DOUBLE_EQ(first.applied_angular_velocity, 0.9);
+  EXPECT_FALSE(gap.fault_active);
+  EXPECT_EQ(gap.active_window_index, -1);
+  EXPECT_DOUBLE_EQ(gap.applied_angular_velocity, 0.1);
+  EXPECT_EQ(second.active_window_index, 1);
+  EXPECT_EQ(third.active_window_index, 2);
+}
+
+TEST(CommandDisturbance, KeepsPersistentFaultActiveAfterItsNominalDuration)
+{
+  my_robot_controller::CommandDisturbanceConfig config;
+  config.start_delay = 1.0;
+  config.duration = 0.5;
+  config.persistent = true;
+  config.left_wheel_effectiveness = 0.7;
+  config.angular_velocity_bias = 0.0;
+  my_robot_controller::CommandDisturbance disturbance(config);
+
+  const auto before = disturbance.apply(0.4, 0.0, 0.9);
+  const auto long_after = disturbance.apply(0.4, 0.0, 100.0);
+
+  EXPECT_FALSE(before.fault_active);
+  EXPECT_TRUE(long_after.fault_active);
+  EXPECT_EQ(long_after.active_window_index, 0);
+  EXPECT_LT(long_after.applied_linear_velocity, 0.4);
+  EXPECT_GT(long_after.applied_angular_velocity, 0.0);
+}
+
 TEST(CommandDisturbance, SupportsAControllerIndependentLinearBias)
 {
   my_robot_controller::CommandDisturbanceConfig config;
@@ -140,6 +183,28 @@ TEST(CommandDisturbance, RejectsInvalidDuration)
 {
   my_robot_controller::CommandDisturbanceConfig config;
   config.duration = 0.0;
+
+  EXPECT_THROW(
+    my_robot_controller::CommandDisturbance disturbance(config),
+    std::invalid_argument);
+}
+
+TEST(CommandDisturbance, RejectsOverlappingRepeatedWindows)
+{
+  my_robot_controller::CommandDisturbanceConfig config;
+  config.start_delays = {1.0, 1.5};
+  config.duration = 1.0;
+
+  EXPECT_THROW(
+    my_robot_controller::CommandDisturbance disturbance(config),
+    std::invalid_argument);
+}
+
+TEST(CommandDisturbance, RejectsMultipleStartsForPersistentFault)
+{
+  my_robot_controller::CommandDisturbanceConfig config;
+  config.start_delays = {1.0, 3.0};
+  config.persistent = true;
 
   EXPECT_THROW(
     my_robot_controller::CommandDisturbance disturbance(config),

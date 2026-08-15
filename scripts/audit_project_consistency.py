@@ -402,6 +402,28 @@ def audit_launch_parity(audit, configs, wheel_separation):
     if runner_separation is not None:
         audit.close(float(runner_separation.group(1)), wheel_separation,
                     'perturbation runner wheel separation')
+    for argument in (
+            'fault_start_delays', 'fault_persistent', 'odometry_x_bias',
+            'odometry_y_bias', 'odometry_yaw_bias'):
+        audit.require(
+            f'{argument}:=' in runner,
+            f'perturbation runner does not forward {argument}',
+        )
+
+    suite = (ROOT / 'scripts' / 'run_pid_perturbation_suite.sh').read_text(
+        encoding='utf-8'
+    )
+    for scenario in (
+            'angular_pulse_train', 'left_wheel_loss_persistent',
+            'localization_yaw_bias'):
+        audit.require(
+            scenario in suite,
+            f'perturbation suite lacks required scenario {scenario}',
+        )
+    audit.require(
+        '6.0;18.0;30.0' in suite,
+        'angular pulse train does not retain its three motion-phase starts',
+    )
 
 
 def main():

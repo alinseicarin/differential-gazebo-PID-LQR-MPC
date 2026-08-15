@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <deque>
+#include <vector>
 
 namespace my_robot_controller
 {
@@ -16,8 +17,15 @@ struct CommandDisturbanceConfig
   /// Seconds from the controller-published experiment start until the fault starts.
   double start_delay{5.0};
 
+  /// Optional repeated start times for identical, non-overlapping fault windows.
+  /// An empty vector retains the legacy single window at `start_delay`.
+  std::vector<double> start_delays;
+
   /// Duration of the fault window in simulation seconds.
   double duration{0.5};
+
+  /// Keep the single configured fault active from its start until experiment end.
+  bool persistent{false};
 
   /// Additive forward-velocity fault. Kept at zero for the swerve benchmark.
   double linear_velocity_bias{0.0};
@@ -51,6 +59,7 @@ struct CommandDisturbanceOutput
   double effective_left_wheel_velocity{0.0};
   double effective_right_wheel_velocity{0.0};
   bool fault_active{false};
+  int active_window_index{-1};
 };
 
 /// Stateless command-bias schedule independent of ROS, Gazebo, and controller.
@@ -74,6 +83,9 @@ public:
 
   /// Report the common schedule state without modifying a command.
   bool is_active(double elapsed_time) const;
+
+  /// Return the zero-based active window, or -1 when the schedule is inactive.
+  int active_window_index(double elapsed_time) const;
 
   const CommandDisturbanceConfig & config() const;
 

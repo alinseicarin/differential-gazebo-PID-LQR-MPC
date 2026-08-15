@@ -18,7 +18,11 @@ METRICS = (
     'peak_abs_cte_m',
     'peak_abs_heading_rad',
     'active_cte_iae_m_s',
+    'active_tail_mean_abs_cte_m',
+    'peak_incremental_cte_vs_nominal_m',
+    'peak_incremental_heading_vs_nominal_rad',
     'baseline_relative_recovery_s',
+    'window_recovery_fraction',
     'max_abs_applied_angular_command_rad_s',
     'angular_saturation_fraction',
     'normalized_command_activity',
@@ -182,9 +186,11 @@ def load_trials(root):
             trial['track_sha256'] = metadata.get('track_sha256', '')
             trial['fault_signature'] = '|'.join(metadata.get(key, '') for key in (
                 'fault_domain', 'fault_start', 'fault_duration',
+                'fault_start_delays', 'fault_persistent',
                 'command_fault_enabled', 'feedback_fault_enabled',
                 'angular_bias', 'left_wheel_effectiveness',
                 'right_wheel_effectiveness', 'command_delay',
+                'odometry_x_bias', 'odometry_y_bias', 'odometry_yaw_bias',
                 'position_noise_stddev', 'yaw_noise_stddev', 'noise_seed',
             ))
             trials.append(trial)
@@ -196,7 +202,8 @@ def load_trials(root):
 def write_all_trials(root, trials):
     stable_fields = [
         'repetition', 'gazebo_seed', 'controller_family', 'track', 'scenario',
-        'fault_domain', 'track_complete', *METRICS, 'noise_seed',
+        'fault_domain', 'fault_window_count', 'recovered_window_count',
+        'persistent_fault', 'track_complete', *METRICS, 'noise_seed',
         'controller_config_sha256', 'reference_config_sha256', 'track_sha256',
     ]
     with (root / 'all_runs.csv').open(
