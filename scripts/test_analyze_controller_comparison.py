@@ -28,6 +28,28 @@ class ComparisonStatisticsTest(unittest.TestCase):
         self.assertAlmostEqual(analysis.exact_mcnemar_test(9, 0), 0.00390625)
         self.assertEqual(analysis.exact_mcnemar_test(0, 0), 1.0)
 
+    def test_completion_role_comes_from_predeclared_protocol(self):
+        protocol = {
+            'completion_analysis_role': 'predeclared_confirmatory',
+            'completion_confirmatory_scenarios': (
+                'left_wheel_loss_persistent'
+            ),
+        }
+        self.assertEqual(
+            analysis.completion_inference_metadata(
+                protocol, 'left_wheel_loss_persistent'
+            ),
+            ('confirmatory_primary', 'confirmatory_completion'),
+        )
+        self.assertEqual(
+            analysis.completion_inference_metadata(protocol, 'nominal'),
+            ('exploratory_secondary', 'exploratory_completion_secondary'),
+        )
+        self.assertEqual(
+            analysis.completion_inference_metadata({}, 'nominal'),
+            ('exploratory_post_hoc', 'exploratory_completion'),
+        )
+
     def test_paired_effect_uses_difference_standard_deviation(self):
         expected = 2.0 / 1.0
         self.assertAlmostEqual(

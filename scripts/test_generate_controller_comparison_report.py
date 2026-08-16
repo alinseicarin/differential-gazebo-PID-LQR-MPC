@@ -33,6 +33,22 @@ class ComparisonReportTest(unittest.TestCase):
             self.assertTrue(tree.getroot().tag.endswith('svg'))
             self.assertIn('TVLQR', path.read_text(encoding='utf-8'))
 
+    def test_missing_optional_metrics_are_detected_before_plotting(self):
+        missing = {
+            controller: [(float('nan'), float('nan'), float('nan'))]
+            for controller in report.CONTROLLERS
+        }
+        self.assertFalse(report.grouped_chart_has_finite_value(missing))
+        rows = [{
+            'controller_family': 'pid', 'track': 'figure_eight',
+            'scenario': 'left_wheel_loss_persistent',
+            'window_recovery_fraction': '',
+        }]
+        self.assertFalse(report.paired_chart_has_finite_value(
+            (('figure_eight', 'left_wheel_loss_persistent'),),
+            'window_recovery_fraction', rows,
+        ))
+
     def test_markdown_uses_actual_run_count_and_labels_completion_post_hoc(self):
         raw = [
             {'controller_family': 'pid', 'track': 'figure_eight',
@@ -57,6 +73,31 @@ class ComparisonReportTest(unittest.TestCase):
             self.assertIn('contine 2 de rulari', text)
             self.assertIn('analiza exploratorie post-hoc', text)
             self.assertNotIn('330 de rulari', text)
+
+    def test_markdown_labels_predeclared_completion_as_confirmatory(self):
+        raw = [
+            {'controller_family': 'pid', 'track': 'figure_eight',
+             'scenario': 'left_wheel_loss_persistent'},
+        ]
+        grouped = [
+            {'controller_family': 'pid', 'track': 'figure_eight',
+             'scenario': 'left_wheel_loss_persistent',
+             'completed': '0', 'runs': '1'},
+        ]
+        completion = [{
+            'inference_role': 'confirmatory_primary',
+            'holm_significant_0p05': '0',
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report.write_markdown_report(
+                root, [], raw, grouped, [], [], completion
+            )
+            text = (root / 'statistical_report.md').read_text(
+                encoding='utf-8'
+            )
+            self.assertIn('analiza confirmatorie predeclarata', text)
+            self.assertIn('endpoint primar', text)
 
 
 if __name__ == '__main__':

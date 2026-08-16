@@ -675,8 +675,21 @@ def write_paired_differences(root, trials, practical_thresholds=None):
     return output
 
 
-def write_completion_comparison(root, trials):
-    """Write a post-hoc paired analysis of trajectory completion outcomes."""
+def completion_inference_metadata(protocol, scenario):
+    """Return the predeclared or legacy role of a completion comparison."""
+    role = protocol.get('completion_analysis_role', 'exploratory_post_hoc')
+    confirmatory_scenarios = set(
+        protocol.get('completion_confirmatory_scenarios', '').split()
+    )
+    if role == 'predeclared_confirmatory':
+        if scenario in confirmatory_scenarios:
+            return 'confirmatory_primary', 'confirmatory_completion'
+        return 'exploratory_secondary', 'exploratory_completion_secondary'
+    return 'exploratory_post_hoc', 'exploratory_completion'
+
+
+def write_completion_comparison(root, trials, protocol):
+    """Write a paired analysis of the binary trajectory endpoint."""
     indexed = {
         (
             trial['controller_family'], trial['gazebo_seed'],
@@ -719,9 +732,12 @@ def write_completion_comparison(root, trials):
             baseline_completed = sum(b for _, b in paired)
             count = len(paired)
             p_value = exact_mcnemar_test(candidate_only, baseline_only)
+            inference_role, holm_family = completion_inference_metadata(
+                protocol, scenario
+            )
             output.append({
-                'inference_role': 'exploratory_post_hoc',
-                'holm_family': 'exploratory_completion',
+                'inference_role': inference_role,
+                'holm_family': holm_family,
                 'candidate': candidate,
                 'baseline': baseline,
                 'track': track,
@@ -751,9 +767,9 @@ def write_completion_comparison(root, trials):
                 'holm_significant_0p05': 0,
             })
 
-    # Completion was not part of the confirmatory plan. Holm correction is
-    # nevertheless applied over all post-hoc completion comparisons so the
-    # exploratory table does not understate its multiplicity.
+    # Each inference family is corrected independently. Legacy datasets retain
+    # one post-hoc family, while a predeclared validation keeps its primary
+    # comparisons separate from secondary nominal diagnostics.
     apply_holm_correction(output)
     fields = [
         'inference_role', 'holm_family', 'candidate', 'baseline', 'track',
@@ -788,6 +804,35 @@ def audit_protocol(root, trials, protocol):
     expected_observation_duration = float(
         protocol.get('fixed_observation_duration_s', '0.0')
     )
+    completion_role = protocol.get(
+        'completion_analysis_role', 'exploratory_post_hoc'
+    )
+    confirmatory_completion_scenarios = set(
+        protocol.get('completion_confirmatory_scenarios', '').split()
+    )
+    if completion_role not in {
+            'exploratory_post_hoc', 'predeclared_confirmatory'}:
+        issues.append(f'unknown completion analysis role: {completion_role}')
+    if completion_role == 'predeclared_confirmatory':
+        if not confirmatory_completion_scenarios:
+            issues.append('confirmatory completion scenario set is empty')
+        declared_scenarios = set(protocol['robustness_scenarios'].split())
+        if not confirmatory_completion_scenarios <= declared_scenarios:
+            issues.append(
+                'confirmatory completion scenarios are absent from the '
+                'campaign matrix'
+            )
+        if expected_observation_duration <= 0.0:
+            issues.append(
+                'confirmatory completion lacks a fixed observation horizon'
+            )
+        if protocol.get('completion_test') != 'exact_two_sided_mcnemar':
+            issues.append('confirmatory completion test is not exact McNemar')
+        if protocol.get('completion_multiplicity') != (
+                'holm_within_inference_family'):
+            issues.append('confirmatory completion multiplicity rule changed')
+        if protocol.get('completion_familywise_alpha') != '0.05':
+            issues.append('confirmatory completion familywise alpha changed')
     repetition_count = int(protocol['repetitions'])
     base_seed = int(protocol['base_gazebo_seed'])
     expected_conditions = set()
@@ -889,6 +934,31 @@ def audit_protocol(root, trials, protocol):
         }
         if len(set(values.values())) != 1 or '' in values.values():
             issues.append(f'common parameter {parameter} differs: {values}')
+
+    if completion_role == 'predeclared_confirmatory':
+        completion_parameter_map = {
+            'goal_tolerance': 'completion_position_tolerance_m',
+            'goal_heading_tolerance': 'completion_heading_tolerance_rad',
+        }
+        for controller_parameter, protocol_parameter in (
+                completion_parameter_map.items()):
+            try:
+                expected_value = float(protocol[protocol_parameter])
+                controller_values = {
+                    float(archived_values[controller][controller_parameter])
+                    for controller in expected_controllers
+                }
+            except (KeyError, TypeError, ValueError):
+                issues.append(
+                    f'completion criterion {protocol_parameter} is missing '
+                    'or invalid'
+                )
+                continue
+            if controller_values != {expected_value}:
+                issues.append(
+                    f'completion criterion {protocol_parameter} differs '
+                    f'from controller values {sorted(controller_values)}'
+                )
 
     reference_path = root / 'protocol_configs' / 'trajectory_reference.yaml'
     if not reference_path.is_file():
@@ -1051,6 +1121,7 @@ def main():
     )
 
     root = arguments.result_directory
+    protocol = read_protocol(root)
     trials = load_trials(root)
     add_nominal_degradation_metrics(trials)
     write_all_trials(root, trials)
@@ -1058,10 +1129,9 @@ def main():
     paired_rows = write_paired_differences(
         root, trials, practical_thresholds
     )
-    write_completion_comparison(root, trials)
+    write_completion_comparison(root, trials, protocol)
     families = write_hypothesis_family_summary(root, paired_rows)
     write_confirmatory_results(root, paired_rows)
-    protocol = read_protocol(root)
     issues = audit_protocol(root, trials, protocol)
     write_text_summary(root, trials, grouped, paired_rows, families, issues)
     print(f'Wrote {root / "all_runs.csv"}')

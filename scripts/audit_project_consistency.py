@@ -461,6 +461,26 @@ def audit_launch_parity(audit, configs, wheel_separation):
         'comparison campaign does not archive its selected reference config',
     )
 
+    confirmatory_runner = (
+        ROOT / 'scripts' / 'run_confirmatory_persistent_validation.sh'
+    ).read_text(encoding='utf-8')
+    for declaration in (
+            'COMPARISON_COMPLETION_ANALYSIS_ROLE="predeclared_confirmatory"',
+            'COMPARISON_COMPLETION_CONFIRMATORY_SCENARIOS='
+            '"left_wheel_loss_persistent"',
+            'COMPARISON_FIXED_OBSERVATION_DURATION="30.0"',
+            'COMPARISON_COMPLETION_POSITION_TOLERANCE_M="0.08"',
+            'COMPARISON_COMPLETION_HEADING_TOLERANCE_RAD="0.15"',
+            'COMPARISON_REQUIRE_CLEAN_GIT="true"'):
+        audit.require(
+            declaration in confirmatory_runner,
+            f'confirmatory completion protocol lacks {declaration}',
+        )
+    audit.require(
+        (ROOT / 'protocols' / 'persistent_wheel_loss_confirmatory.md').is_file(),
+        'tracked confirmatory completion protocol is missing',
+    )
+
     suite_runner = (
         ROOT / 'scripts' / 'run_pid_perturbation_suite.sh'
     ).read_text(encoding='utf-8')

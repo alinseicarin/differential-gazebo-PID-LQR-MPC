@@ -254,6 +254,25 @@ def svg_bar_chart(path, title, y_label, categories, values, force_zero=True):
     path.write_text('\n'.join(svg) + '\n', encoding='utf-8')
 
 
+def grouped_chart_has_finite_value(values):
+    """Return whether at least one controller/category mean can be plotted."""
+    return any(
+        math.isfinite(mean)
+        for controller in CONTROLLERS
+        for mean, _low, _high in values[controller]
+    )
+
+
+def paired_chart_has_finite_value(conditions, metric, raw_rows):
+    """Return whether a requested paired-data figure has any observation."""
+    requested = set(conditions)
+    return any(
+        (row['track'], row['scenario']) in requested
+        and math.isfinite(number(row, metric))
+        for row in raw_rows
+    )
+
+
 def svg_paired_dot_chart(
         path, title, y_label, category_labels, conditions, metric, raw_rows):
     """Show every paired seed with gray links across the three controllers."""
@@ -449,6 +468,15 @@ def write_markdown_report(
         row for row in completion_rows
         if row['holm_significant_0p05'] == '1'
     ]
+    primary_completion = [
+        row for row in completion_rows
+        if row.get('inference_role') == 'confirmatory_primary'
+    ]
+    primary_completion_significant = [
+        row for row in primary_completion
+        if row['holm_significant_0p05'] == '1'
+    ]
+    completion_is_confirmatory = bool(primary_completion)
     grouped = group_index(grouped_rows)
     conditions = sorted({
         (row['track'], row['scenario']) for row in raw_rows
@@ -480,6 +508,8 @@ def write_markdown_report(
         '',
         f'- Familii statistice: {len(family_rows)}',
         f'- Comparatii confirmatorii Holm-semnificative: {len(significant)}',
+        '- Comparatii primare de finalizare Holm-semnificative: '
+        f'{len(primary_completion_significant)}',
         '- Comparatii semnificative cu CI complet dincolo de pragul practic: '
         f'{len(practically_clear)}',
         '',
@@ -503,14 +533,39 @@ def write_markdown_report(
             )
         lines.append('')
 
+    if completion_is_confirmatory:
+        completion_title = (
+            '## Finalizarea traiectoriei - analiza confirmatorie predeclarata'
+        )
+        completion_explanation = (
+            'Finalizarea sub scenariile marcate confirmatorii a fost stabilita '
+            'ca endpoint primar inaintea colectarii acestor date independente. '
+            'Comparatiile pereche folosesc testul McNemar exact bilateral pe '
+            'seed-urile discordante si corectia Holm in familia primara. '
+            'Conditiile nominale raman diagnostice secundare.'
+        )
+        completion_file_description = (
+            'analiza pereche predeclarata a ratei de finalizare.'
+        )
+    else:
+        completion_title = (
+            '## Finalizarea traiectoriei - analiza exploratorie post-hoc'
+        )
+        completion_explanation = (
+            'Rata de finalizare nu a fost inclusa in planul confirmatoriu '
+            'inaintea campaniei. Rezultatele din aceasta sectiune sunt, prin '
+            'urmare, exploratorii. Comparatiile pereche folosesc testul '
+            'McNemar exact bilateral pe seed-urile discordante si corectia '
+            'Holm pentru toate comparatiile de finalizare.'
+        )
+        completion_file_description = (
+            'analiza exploratorie pereche a ratei de finalizare.'
+        )
+
     lines.extend((
-        '## Finalizarea traiectoriei - analiza exploratorie post-hoc',
+        completion_title,
         '',
-        'Rata de finalizare nu a fost inclusa in planul confirmatoriu inaintea '
-        'campaniei. Rezultatele din aceasta sectiune sunt, prin urmare, '
-        'exploratorii. Comparatiile pereche folosesc testul McNemar exact '
-        'bilateral pe seed-urile discordante si corectia Holm pentru toate '
-        'comparatiile de finalizare.',
+        completion_explanation,
         '',
         '| Conditie | PID | TVLQR | MPC |',
         '|---|---:|---:|---:|',
@@ -559,8 +614,7 @@ def write_markdown_report(
         '- `confirmatory_results.csv`: numai ipotezele confirmatorii.',
         '- `paired_differences.csv`: toate analizele confirmatorii si exploratorii.',
         '- `hypothesis_families.csv`: dimensiunea si rezultatul fiecarei familii.',
-        '- `completion_comparison.csv`: analiza exploratorie pereche a ratei '
-        'de finalizare.',
+        '- `completion_comparison.csv`: ' + completion_file_description,
         '',
     ))
     (root / 'statistical_report.md').write_text(
@@ -701,9 +755,16 @@ def main():
 
     names = []
     for name, title, y_label, labels, conditions, metric, force_zero in specifications:
+        values = chart_values(indexed, conditions, metric)
+        # A focused campaign may intentionally omit every finite-duration
+        # disturbance.  In that case recovery-fraction fields are undefined,
+        # so the report should omit that figure instead of aborting after all
+        # simulations have completed successfully.
+        if not labels or not grouped_chart_has_finite_value(values):
+            continue
         svg_bar_chart(
             figures / name, title, y_label, labels,
-            chart_values(indexed, conditions, metric), force_zero,
+            values, force_zero,
         )
         names.append(name)
 
@@ -725,6 +786,9 @@ def main():
         ),
     )
     for name, title, y_label, labels, conditions, metric in paired_specifications:
+        if not labels or not paired_chart_has_finite_value(
+                conditions, metric, raw_rows):
+            continue
         svg_paired_dot_chart(
             figures / name, title, y_label, labels, conditions, metric, raw_rows
         )

@@ -45,6 +45,11 @@ POSITION_SENSITIVITY_LOW_M="${COMPARISON_POSITION_SENSITIVITY_LOW_M:-${POSITION_
 POSITION_SENSITIVITY_HIGH_M="${COMPARISON_POSITION_SENSITIVITY_HIGH_M:-${POSITION_THRESHOLD_M}}"
 ANGULAR_PULSE_START_DELAYS="${COMPARISON_ANGULAR_PULSE_START_DELAYS:-6.0;18.0;30.0}"
 FIXED_OBSERVATION_DURATION="${COMPARISON_FIXED_OBSERVATION_DURATION:-0.0}"
+COMPLETION_ANALYSIS_ROLE="${COMPARISON_COMPLETION_ANALYSIS_ROLE:-exploratory_post_hoc}"
+COMPLETION_CONFIRMATORY_SCENARIOS="${COMPARISON_COMPLETION_CONFIRMATORY_SCENARIOS:-}"
+COMPLETION_POSITION_TOLERANCE_M="${COMPARISON_COMPLETION_POSITION_TOLERANCE_M:-0.08}"
+COMPLETION_HEADING_TOLERANCE_RAD="${COMPARISON_COMPLETION_HEADING_TOLERANCE_RAD:-0.15}"
+REQUIRE_CLEAN_GIT="${COMPARISON_REQUIRE_CLEAN_GIT:-false}"
 
 if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "${BASE_GAZEBO_SEED}" =~ ^[0-9]+$ ]] ||
@@ -53,11 +58,16 @@ if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
   ((ROS_DOMAIN > 232)) ||
   [[ "${GUI}" != "true" && "${GUI}" != "false" ]] ||
   [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]] ||
+  [[ "${REQUIRE_CLEAN_GIT}" != "true" && "${REQUIRE_CLEAN_GIT}" != "false" ]] ||
   ! [[ "${POSITION_THRESHOLD_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "${HEADING_THRESHOLD_RAD}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "${POSITION_SENSITIVITY_LOW_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "${POSITION_SENSITIVITY_HIGH_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "${FIXED_OBSERVATION_DURATION}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  [[ "${COMPLETION_ANALYSIS_ROLE}" != "exploratory_post_hoc" &&
+    "${COMPLETION_ANALYSIS_ROLE}" != "predeclared_confirmatory" ]] ||
+  ! [[ "${COMPLETION_POSITION_TOLERANCE_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${COMPLETION_HEADING_TOLERANCE_RAD}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "${ANGULAR_PULSE_START_DELAYS}" =~ ^[0-9]+([.][0-9]+)?(\;[0-9]+([.][0-9]+)?)*$ ]]
 then
   echo "Invalid repetitions, seed, GUI, resume, or practical threshold" >&2
@@ -89,6 +99,25 @@ for controller in "${controllers[@]}"; do
   esac
 done
 
+if [[ "${COMPLETION_ANALYSIS_ROLE}" == "predeclared_confirmatory" ]]; then
+  if [[ -z "${COMPLETION_CONFIRMATORY_SCENARIOS}" ]]; then
+    echo "A confirmatory completion campaign needs at least one scenario" >&2
+    exit 2
+  fi
+  if awk -v duration="${FIXED_OBSERVATION_DURATION}" \
+    'BEGIN {exit !(duration <= 0.0)}'
+  then
+    echo "Confirmatory completion requires a fixed positive observation horizon" >&2
+    exit 2
+  fi
+  for scenario in ${COMPLETION_CONFIRMATORY_SCENARIOS}; do
+    if ! [[ " ${ROBUSTNESS_SCENARIOS} " == *" ${scenario} "* ]]; then
+      echo "Confirmatory completion scenario is not in the campaign: ${scenario}" >&2
+      exit 2
+    fi
+  done
+fi
+
 TRACK_ROOT="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks"
 CONFIG_ROOT="/home/ws/install/my_robot_controller/share/my_robot_controller/config"
 REFERENCE_CONFIG_PATH="${COMPARISON_REFERENCE_CONFIG_PATH:-${CONFIG_ROOT}/trajectory_reference.yaml}"
@@ -102,10 +131,22 @@ REFERENCE_CONFIG_SHA256="$(sha256sum "${REFERENCE_CONFIG_PATH}" | awk '{print $1
 # Resume is allowed only when this fingerprint and the complete protocol agree,
 # preventing old and new implementations from being mixed in one dataset.
 SOURCE_FINGERPRINT="$({
-  find src/my_robot_controller src/my_robot_description scripts \
+  find src/my_robot_controller src/my_robot_description scripts protocols \
     -type f -not -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum
   sha256sum .devcontainer/Dockerfile generate_tracks.py track_*.csv
 } | sha256sum | awk '{print $1}')"
+GIT_REVISION="$(git rev-parse HEAD 2>/dev/null || echo unavailable)"
+if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  GIT_TRACKED_WORKTREE_STATE="modified"
+else
+  GIT_TRACKED_WORKTREE_STATE="clean"
+fi
+if [[ "${REQUIRE_CLEAN_GIT}" == "true" &&
+  "${GIT_TRACKED_WORKTREE_STATE}" != "clean" ]]
+then
+  echo "This campaign requires a committed, clean tracked worktree" >&2
+  exit 2
+fi
 PROTOCOL_SIGNATURE="$(printf '%s\n' \
   "${CONTROLLER_TEXT}" "${NOMINAL_TRACK_TEXT}" "${ROBUSTNESS_TRACK}" \
   "${ROBUSTNESS_SCENARIOS}" "${REPETITIONS}" "${BASE_GAZEBO_SEED}" \
@@ -113,8 +154,13 @@ PROTOCOL_SIGNATURE="$(printf '%s\n' \
   "${POSITION_THRESHOLD_M}" "${HEADING_THRESHOLD_RAD}" \
   "${POSITION_THRESHOLD_BASIS}" "${POSITION_SENSITIVITY_LOW_M}" \
   "${POSITION_SENSITIVITY_HIGH_M}" "${ANGULAR_PULSE_START_DELAYS}" \
-  "${FIXED_OBSERVATION_DURATION}" \
-  "${REFERENCE_CONFIG_SHA256}" "${SOURCE_FINGERPRINT}" | \
+  "${FIXED_OBSERVATION_DURATION}" "${COMPLETION_ANALYSIS_ROLE}" \
+  "${COMPLETION_CONFIRMATORY_SCENARIOS}" \
+  "${COMPLETION_POSITION_TOLERANCE_M}" \
+  "${COMPLETION_HEADING_TOLERANCE_RAD}" \
+  "${REQUIRE_CLEAN_GIT}" \
+  "${REFERENCE_CONFIG_SHA256}" "${SOURCE_FINGERPRINT}" \
+  "${GIT_REVISION}" "${GIT_TRACKED_WORKTREE_STATE}" | \
   sha256sum | awk '{print $1}')"
 if [[ -f "${RESULT_DIR}/protocol.txt" ]]; then
   previous_signature="$(awk -F= '$1 == "protocol_signature" {print $2}' \
@@ -130,7 +176,7 @@ mkdir -p "${RESULT_DIR}/protocol_tracks" "${RESULT_DIR}/protocol_configs"
 # Keep the exact runtime source beside the data even if the workspace contained
 # uncommitted changes when the campaign was launched.
 tar --exclude='*/__pycache__/*' -czf "${RESULT_DIR}/protocol_source.tar.gz" \
-  src/my_robot_controller src/my_robot_description scripts \
+  src/my_robot_controller src/my_robot_description scripts protocols \
   .devcontainer/Dockerfile generate_tracks.py track_*.csv
 
 # Archive the exact configuration files selected at campaign start. Runtime
@@ -182,8 +228,18 @@ track_path()
   echo "position_sensitivity_high_m=${POSITION_SENSITIVITY_HIGH_M}"
   echo "angular_pulse_start_delays_s=${ANGULAR_PULSE_START_DELAYS}"
   echo "fixed_observation_duration_s=${FIXED_OBSERVATION_DURATION}"
+  echo "completion_analysis_role=${COMPLETION_ANALYSIS_ROLE}"
+  echo "completion_confirmatory_scenarios=${COMPLETION_CONFIRMATORY_SCENARIOS}"
+  echo "completion_test=exact_two_sided_mcnemar"
+  echo "completion_multiplicity=holm_within_inference_family"
+  echo "completion_familywise_alpha=0.05"
+  echo "completion_position_tolerance_m=${COMPLETION_POSITION_TOLERANCE_M}"
+  echo "completion_heading_tolerance_rad=${COMPLETION_HEADING_TOLERANCE_RAD}"
   echo "reference_config_sha256=${REFERENCE_CONFIG_SHA256}"
   echo "source_fingerprint=${SOURCE_FINGERPRINT}"
+  echo "git_revision=${GIT_REVISION}"
+  echo "git_tracked_worktree_state=${GIT_TRACKED_WORKTREE_STATE}"
+  echo "require_clean_git=${REQUIRE_CLEAN_GIT}"
   echo "protocol_signature=${PROTOCOL_SIGNATURE}"
   echo "controller order rotates once per repetition"
   echo "negative paired difference means the first controller has less error"
