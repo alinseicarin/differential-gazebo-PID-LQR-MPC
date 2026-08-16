@@ -10,8 +10,9 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # Register the linters declared in package.xml when colcon testing is enabled.
-# Copyright and cpplint remain disabled until project-wide license headers are
-# selected and added consistently.
+# The repository is Apache-2.0 licensed, but per-file copyright headers and the
+# project's established C++ formatting are not yet uniform. Keep only those two
+# purely stylistic checks disabled; the remaining ament linters still run.
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
@@ -24,6 +25,7 @@ endif()
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -99,6 +101,12 @@ target_include_directories(odometry_disturbance PUBLIC include)
 target_compile_features(odometry_disturbance PUBLIC cxx_std_17)
 target_link_libraries(odometry_disturbance PUBLIC path_reference_manager)
 
+# Convert wheel-joint rotation and Gazebo body twist into explicit slip metrics
+# without coupling the calculation to ROS subscriptions or CSV plumbing.
+add_library(wheel_slip_metrics src/wheel_slip_metrics.cpp)
+target_include_directories(wheel_slip_metrics PUBLIC include)
+target_compile_features(wheel_slip_metrics PUBLIC cxx_std_17)
+
 # Build the selectable PID executable against the reusable control components.
 add_executable(pid_node src/pid_node.cpp)
 target_include_directories(pid_node PUBLIC include)
@@ -151,8 +159,10 @@ ament_target_dependencies(odometry_disturbance_injector rclcpp nav_msgs std_msgs
 add_executable(trajectory_evaluator_node src/trajectory_evaluator_node.cpp)
 target_include_directories(trajectory_evaluator_node PUBLIC include)
 target_compile_features(trajectory_evaluator_node PUBLIC cxx_std_17)
-target_link_libraries(trajectory_evaluator_node trajectory_reference_manager)
-ament_target_dependencies(trajectory_evaluator_node rclcpp nav_msgs std_msgs)
+target_link_libraries(
+  trajectory_evaluator_node trajectory_reference_manager wheel_slip_metrics)
+ament_target_dependencies(
+  trajectory_evaluator_node rclcpp nav_msgs sensor_msgs std_msgs)
 
 if(BUILD_TESTING)
   # Geometry tests run without ROS or Gazebo and protect the common definitions
@@ -221,6 +231,13 @@ if(BUILD_TESTING)
   target_include_directories(test_odometry_disturbance PUBLIC include)
   target_compile_features(test_odometry_disturbance PUBLIC cxx_std_17)
 
+  # Check that ordinary differential-drive turning is not mistaken for slip
+  # and that longitudinal and lateral discrepancies retain their definitions.
+  ament_add_gtest(test_wheel_slip_metrics test/test_wheel_slip_metrics.cpp)
+  target_link_libraries(test_wheel_slip_metrics wheel_slip_metrics)
+  target_include_directories(test_wheel_slip_metrics PUBLIC include)
+  target_compile_features(test_wheel_slip_metrics PUBLIC cxx_std_17)
+
 endif()
 
 # ROS 2 discovers executables installed under lib/<package-name>.
@@ -241,6 +258,7 @@ install(TARGETS
   cascaded_pid_controller
   command_disturbance
   odometry_disturbance
+  wheel_slip_metrics
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

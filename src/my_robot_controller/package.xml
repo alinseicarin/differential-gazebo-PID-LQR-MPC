@@ -16,6 +16,7 @@
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <!-- Matrix algebra and matrix exponential for the shared LTV model. -->
   <build_depend>eigen3_cmake_module</build_depend>

@@ -11,7 +11,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 # Run Python, XML, CMake, and package metadata checks under `colcon test`.
-# Copyright and cpplint remain disabled until project-wide licensing is chosen.
+# The repository is Apache-2.0 licensed, but per-file copyright headers are not
+# yet uniform. Keep that stylistic check disabled; the remaining linters run.
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

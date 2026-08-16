@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Aggregate paired PID--TVLQR--MPC trials and audit protocol equality."""
 
+import argparse
 import csv
 import hashlib
 import math
 import re
 import statistics
-import sys
 from collections import defaultdict
 from pathlib import Path
 
 
-METRICS = (
+BASE_METRICS = (
     'cte_rmse_m',
     'heading_rmse_rad',
     'temporal_position_rmse_m',
@@ -27,6 +27,72 @@ METRICS = (
     'angular_saturation_fraction',
     'normalized_command_activity',
 )
+
+# Robustness is not only the absolute response under a fault.  A controller
+# that is less accurate nominally can otherwise appear artificially robust.
+# These paired-with-nominal metrics quantify how much each perturbation changes
+# the same controller under the same Gazebo seed.
+DEGRADATION_SOURCES = {
+    'degradation_cte_rmse_m': 'cte_rmse_m',
+    'degradation_heading_rmse_rad': 'heading_rmse_rad',
+    'degradation_temporal_position_rmse_m': 'temporal_position_rmse_m',
+    'degradation_peak_abs_cte_m': 'peak_abs_cte_m',
+    'degradation_normalized_command_activity': 'normalized_command_activity',
+}
+
+METRICS = BASE_METRICS + tuple(DEGRADATION_SOURCES)
+
+FINITE_PERTURBATION_SCENARIOS = {
+    'angular_pulse_train',
+    'angular_constant',
+    'left_wheel_loss',
+    'command_delay',
+    'localization_noise',
+    'localization_yaw_bias',
+}
+
+# A positive difference is favorable only for recovery fraction.  Every other
+# metric is an error, duration, peak, saturation, or command-effort quantity
+# for which a smaller value is preferable.
+HIGHER_IS_BETTER = {'window_recovery_fraction'}
+
+# Engineering-relevance bands reuse the already documented recovery tolerances
+# where units agree.  Empty entries are deliberately left uninterpreted rather
+# than inventing an arbitrary practical threshold.
+PRACTICAL_THRESHOLDS = {
+    'cte_rmse_m': 0.01,
+    'temporal_position_rmse_m': 0.01,
+    'peak_abs_cte_m': 0.01,
+    'active_tail_mean_abs_cte_m': 0.01,
+    'peak_incremental_cte_vs_nominal_m': 0.01,
+    'degradation_cte_rmse_m': 0.01,
+    'degradation_temporal_position_rmse_m': 0.01,
+    'degradation_peak_abs_cte_m': 0.01,
+    'heading_rmse_rad': 0.02,
+    'peak_abs_heading_rad': 0.02,
+    'peak_incremental_heading_vs_nominal_rad': 0.02,
+    'degradation_heading_rmse_rad': 0.02,
+}
+
+HEADING_PRACTICAL_METRICS = {
+    'heading_rmse_rad',
+    'peak_abs_heading_rad',
+    'peak_incremental_heading_vs_nominal_rad',
+    'degradation_heading_rmse_rad',
+}
+
+
+def practical_threshold_map(position_threshold_m, heading_threshold_rad):
+    """Apply one predeclared band consistently within each physical unit."""
+    return {
+        metric: (
+            heading_threshold_rad
+            if metric in HEADING_PRACTICAL_METRICS
+            else position_threshold_m
+        )
+        for metric in PRACTICAL_THRESHOLDS
+    }
+
 
 COMMON_CONTROLLER_PARAMETERS = (
     'nominal_control_frequency',
@@ -130,6 +196,22 @@ def format_value(value):
     return '' if not math.isfinite(value) else f'{value:.9f}'
 
 
+def quantile(values, probability):
+    """Return a linearly interpolated sample quantile (Hyndman--Fan type 7)."""
+    ordered = sorted(value for value in values if math.isfinite(value))
+    if not ordered:
+        return math.nan
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError('quantile probability must lie in [0, 1]')
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
 def confidence_interval(values):
     values = [value for value in values if math.isfinite(value)]
     if not values:
@@ -142,6 +224,154 @@ def confidence_interval(values):
     critical = T_975[degrees] if degrees < len(T_975) else 1.96
     half_width = critical * deviation / math.sqrt(len(values))
     return mean, deviation, mean - half_width, mean + half_width
+
+
+def exact_sign_flip_test(values):
+    """Two-sided paired randomization test for a zero centered difference.
+
+    All 2^n sign assignments are enumerated for the thesis protocol (n=10).
+    This avoids an additional statistics dependency and does not require a
+    Gaussian approximation.  Larger future campaigns use a deterministic
+    normal approximation only after the exact enumeration becomes impractical.
+    """
+    differences = [value for value in values if math.isfinite(value)]
+    count = len(differences)
+    if count == 0:
+        return math.nan, 'not_available'
+    observed = abs(statistics.fmean(differences))
+    tolerance = 1.0e-15 * max(1.0, observed)
+
+    if count <= 20:
+        extreme = 0
+        assignment_count = 1 << count
+        for mask in range(assignment_count):
+            signed_sum = 0.0
+            for index, value in enumerate(differences):
+                signed_sum += value if mask & (1 << index) else -value
+            if abs(signed_sum / count) + tolerance >= observed:
+                extreme += 1
+        return extreme / assignment_count, 'exact_sign_flip'
+
+    # For an unexpectedly large future campaign, the standardized mean tends
+    # toward a standard normal distribution under random sign assignment.
+    sum_of_squares = sum(value * value for value in differences)
+    if sum_of_squares <= 0.0:
+        return 1.0, 'normal_sign_flip_approximation'
+    z_value = abs(sum(differences)) / math.sqrt(sum_of_squares)
+    p_value = math.erfc(z_value / math.sqrt(2.0))
+    return min(1.0, max(0.0, p_value)), 'normal_sign_flip_approximation'
+
+
+def exact_mcnemar_test(candidate_only, baseline_only):
+    """Return the exact two-sided test for paired binary outcomes."""
+    discordant = candidate_only + baseline_only
+    if discordant == 0:
+        return 1.0
+    smaller = min(candidate_only, baseline_only)
+    tail_count = sum(
+        math.comb(discordant, successes)
+        for successes in range(smaller + 1)
+    )
+    return min(1.0, 2.0 * tail_count / (2 ** discordant))
+
+
+def paired_effect_dz(values):
+    """Return Cohen's dz based on the standard deviation of paired differences."""
+    differences = [value for value in values if math.isfinite(value)]
+    if len(differences) < 2:
+        return math.nan
+    deviation = statistics.stdev(differences)
+    if deviation <= 0.0:
+        return math.nan
+    return statistics.fmean(differences) / deviation
+
+
+def adjusted_fisher_pearson_skewness(values):
+    """Small-sample adjusted skewness used only as a distribution diagnostic."""
+    samples = [value for value in values if math.isfinite(value)]
+    count = len(samples)
+    if count < 3:
+        return math.nan
+    mean = statistics.fmean(samples)
+    second = sum((value - mean) ** 2 for value in samples) / count
+    if second <= 0.0:
+        return 0.0
+    third = sum((value - mean) ** 3 for value in samples) / count
+    unadjusted = third / (second ** 1.5)
+    return math.sqrt(count * (count - 1)) / (count - 2) * unadjusted
+
+
+def iqr_outlier_count(values):
+    samples = [value for value in values if math.isfinite(value)]
+    if len(samples) < 4:
+        return 0
+    first = quantile(samples, 0.25)
+    third = quantile(samples, 0.75)
+    spread = third - first
+    lower = first - 1.5 * spread
+    upper = third + 1.5 * spread
+    return sum(value < lower or value > upper for value in samples)
+
+
+def inference_metadata(track, scenario, metric):
+    """Analysis-plan primary families; all other results are exploratory."""
+    if scenario == 'nominal' and metric == 'temporal_position_rmse_m':
+        return 'confirmatory', 'nominal_temporal_accuracy'
+    if scenario == 'nominal' and metric == 'cte_rmse_m':
+        return 'confirmatory', 'nominal_spatial_accuracy'
+    if (
+            scenario in FINITE_PERTURBATION_SCENARIOS and
+            metric == 'degradation_temporal_position_rmse_m'):
+        return 'confirmatory', 'transient_temporal_robustness'
+    if (
+            scenario in FINITE_PERTURBATION_SCENARIOS and
+            metric == 'degradation_cte_rmse_m'):
+        return 'confirmatory', 'transient_spatial_robustness'
+    if (
+            scenario in FINITE_PERTURBATION_SCENARIOS and
+            metric == 'window_recovery_fraction'):
+        return 'confirmatory', 'transient_recovery'
+    if (
+            scenario == 'left_wheel_loss_persistent' and
+            metric == 'active_tail_mean_abs_cte_m'):
+        return 'confirmatory', 'persistent_spatial_robustness'
+    if metric == 'normalized_command_activity':
+        return 'confirmatory', 'control_effort'
+    return 'exploratory', f'exploratory_{metric}'
+
+
+def apply_holm_correction(rows):
+    """Add strong family-wise error control within each declared family."""
+    families = defaultdict(list)
+    for index, row in enumerate(rows):
+        p_value = row['sign_flip_p_value']
+        if math.isfinite(p_value):
+            families[row['holm_family']].append((index, p_value))
+
+    for members in families.values():
+        ordered = sorted(members, key=lambda item: item[1])
+        running_maximum = 0.0
+        family_size = len(ordered)
+        for rank, (row_index, p_value) in enumerate(ordered):
+            adjusted = min(1.0, (family_size - rank) * p_value)
+            running_maximum = max(running_maximum, adjusted)
+            rows[row_index]['holm_adjusted_p_value'] = running_maximum
+            rows[row_index]['holm_family_size'] = family_size
+            rows[row_index]['holm_significant_0p05'] = (
+                1 if running_maximum < 0.05 else 0
+            )
+
+
+def practical_interpretation(low, high, threshold):
+    if not all(math.isfinite(value) for value in (low, high, threshold)):
+        return 'not_predeclared'
+    if high < -threshold:
+        return 'candidate_better_beyond_practical_threshold'
+    if low > threshold:
+        return 'baseline_better_beyond_practical_threshold'
+    if low >= -threshold and high <= threshold:
+        return 'confidence_interval_inside_practical_band'
+    return 'confidence_interval_overlaps_practical_threshold'
 
 
 def parse_run_directory(summary_path):
@@ -184,6 +414,12 @@ def load_trials(root):
                 'reference_config_sha256', ''
             )
             trial['track_sha256'] = metadata.get('track_sha256', '')
+            trial['fixed_observation_duration'] = metadata.get(
+                'fixed_observation_duration', '0.0'
+            )
+            trial['observation_horizon_reached'] = metadata.get(
+                'observation_horizon_reached', '0'
+            )
             trial['fault_signature'] = '|'.join(metadata.get(key, '') for key in (
                 'fault_domain', 'fault_start', 'fault_duration',
                 'fault_start_delays', 'fault_persistent',
@@ -192,6 +428,7 @@ def load_trials(root):
                 'right_wheel_effectiveness', 'command_delay',
                 'odometry_x_bias', 'odometry_y_bias', 'odometry_yaw_bias',
                 'position_noise_stddev', 'yaw_noise_stddev', 'noise_seed',
+                'fixed_observation_duration',
             ))
             trials.append(trial)
     if not trials:
@@ -199,11 +436,45 @@ def load_trials(root):
     return trials
 
 
+def add_nominal_degradation_metrics(trials):
+    """Attach within-controller, same-seed degradation relative to nominal."""
+    nominal = {}
+    for trial in trials:
+        if trial['scenario'] != 'nominal':
+            continue
+        key = (
+            trial['controller_family'], trial['gazebo_seed'], trial['track'],
+        )
+        if key in nominal:
+            raise RuntimeError(f'duplicate nominal trial identity: {key}')
+        nominal[key] = trial
+
+    for trial in trials:
+        for output_metric in DEGRADATION_SOURCES:
+            trial[output_metric] = math.nan
+        if trial['scenario'] == 'nominal':
+            continue
+        key = (
+            trial['controller_family'], trial['gazebo_seed'], trial['track'],
+        )
+        baseline = nominal.get(key)
+        if baseline is None:
+            # A robustness track without a matched nominal run cannot support a
+            # degradation claim; absolute metrics remain available.
+            continue
+        for output_metric, source_metric in DEGRADATION_SOURCES.items():
+            perturbed_value = finite(trial, source_metric)
+            nominal_value = finite(baseline, source_metric)
+            if math.isfinite(perturbed_value) and math.isfinite(nominal_value):
+                trial[output_metric] = perturbed_value - nominal_value
+
+
 def write_all_trials(root, trials):
     stable_fields = [
         'repetition', 'gazebo_seed', 'controller_family', 'track', 'scenario',
         'fault_domain', 'fault_window_count', 'recovered_window_count',
-        'persistent_fault', 'track_complete', *METRICS, 'noise_seed',
+        'persistent_fault', 'track_complete',
+        'analysis_observation_duration_s', *METRICS, 'noise_seed',
         'controller_config_sha256', 'reference_config_sha256', 'track_sha256',
     ]
     with (root / 'all_runs.csv').open(
@@ -228,6 +499,7 @@ def write_group_summary(root, trials):
     for metric in METRICS:
         fields.extend((
             f'{metric}_n', f'{metric}_mean', f'{metric}_stddev',
+            f'{metric}_median', f'{metric}_q1', f'{metric}_q3',
             f'{metric}_ci95_low', f'{metric}_ci95_high',
         ))
 
@@ -250,6 +522,9 @@ def write_group_summary(root, trials):
                 f'{metric}_n': len(valid),
                 f'{metric}_mean': mean,
                 f'{metric}_stddev': deviation,
+                f'{metric}_median': quantile(valid, 0.5),
+                f'{metric}_q1': quantile(valid, 0.25),
+                f'{metric}_q3': quantile(valid, 0.75),
                 f'{metric}_ci95_low': low,
                 f'{metric}_ci95_high': high,
             })
@@ -264,7 +539,9 @@ def write_group_summary(root, trials):
     return output
 
 
-def write_paired_differences(root, trials):
+def write_paired_differences(root, trials, practical_thresholds=None):
+    if practical_thresholds is None:
+        practical_thresholds = PRACTICAL_THRESHOLDS
     indexed = {}
     controllers = set()
     for trial in trials:
@@ -299,29 +576,95 @@ def write_paired_differences(root, trials):
                     matched.append((candidate_row, baseline_row))
             for metric in METRICS:
                 differences = []
+                candidate_values = []
+                baseline_values = []
                 for candidate_row, baseline_row in matched:
                     candidate_value = finite(candidate_row, metric)
                     baseline_value = finite(baseline_row, metric)
                     if math.isfinite(candidate_value) and math.isfinite(baseline_value):
+                        candidate_values.append(candidate_value)
+                        baseline_values.append(baseline_value)
                         differences.append(candidate_value - baseline_value)
                 mean, deviation, low, high = confidence_interval(differences)
+                p_value, test_method = exact_sign_flip_test(differences)
+                role, family = inference_metadata(track, scenario, metric)
+                higher_is_better = metric in HIGHER_IS_BETTER
+                threshold = practical_thresholds.get(metric, math.nan)
+                candidate_mean = (
+                    statistics.fmean(candidate_values)
+                    if candidate_values else math.nan
+                )
+                baseline_mean = (
+                    statistics.fmean(baseline_values)
+                    if baseline_values else math.nan
+                )
+                relative_difference = (
+                    100.0 * mean / abs(baseline_mean)
+                    if math.isfinite(mean) and math.isfinite(baseline_mean) and
+                    abs(baseline_mean) > 1.0e-15 else math.nan
+                )
+                if not math.isfinite(mean) or abs(mean) <= 1.0e-15:
+                    mean_favors = 'tie_or_unavailable'
+                elif (mean > 0.0) == higher_is_better:
+                    mean_favors = 'candidate'
+                else:
+                    mean_favors = 'baseline'
+                practical_low, practical_high = low, high
+                if higher_is_better:
+                    practical_low, practical_high = -high, -low
                 output.append({
                     'candidate': candidate,
                     'baseline': baseline,
                     'track': track,
                     'scenario': scenario,
                     'metric': metric,
+                    'inference_role': role,
+                    'holm_family': family,
+                    'higher_is_better': 1 if higher_is_better else 0,
                     'paired_samples': len(differences),
+                    'candidate_mean': candidate_mean,
+                    'baseline_mean': baseline_mean,
                     'mean_candidate_minus_baseline': mean,
+                    'relative_difference_percent': relative_difference,
                     'stddev_difference': deviation,
+                    'median_difference': quantile(differences, 0.5),
+                    'difference_q1': quantile(differences, 0.25),
+                    'difference_q3': quantile(differences, 0.75),
                     'ci95_low': low,
                     'ci95_high': high,
+                    'ci95_excludes_zero': (
+                        1 if math.isfinite(low) and math.isfinite(high) and
+                        (high < 0.0 or low > 0.0) else 0
+                    ),
+                    'cohen_dz': paired_effect_dz(differences),
+                    'difference_skewness': adjusted_fisher_pearson_skewness(
+                        differences
+                    ),
+                    'iqr_outlier_count': iqr_outlier_count(differences),
+                    'test_method': test_method,
+                    'sign_flip_p_value': p_value,
+                    'holm_family_size': 0,
+                    'holm_adjusted_p_value': math.nan,
+                    'holm_significant_0p05': 0,
+                    'mean_favors': mean_favors,
+                    'practical_threshold': threshold,
+                    'practical_interpretation': practical_interpretation(
+                        practical_low, practical_high, threshold
+                    ),
                 })
 
+    apply_holm_correction(output)
     fields = list(output[0]) if output else [
         'candidate', 'baseline', 'track', 'scenario', 'metric',
-        'paired_samples', 'mean_candidate_minus_baseline',
-        'stddev_difference', 'ci95_low', 'ci95_high',
+        'inference_role', 'holm_family', 'higher_is_better',
+        'paired_samples', 'candidate_mean', 'baseline_mean',
+        'mean_candidate_minus_baseline', 'relative_difference_percent',
+        'stddev_difference', 'median_difference', 'difference_q1',
+        'difference_q3', 'ci95_low', 'ci95_high', 'ci95_excludes_zero',
+        'cohen_dz', 'difference_skewness', 'iqr_outlier_count',
+        'test_method', 'sign_flip_p_value', 'holm_family_size',
+        'holm_adjusted_p_value', 'holm_significant_0p05', 'mean_favors',
+        'practical_threshold', 'practical_interpretation',
     ]
     with (root / 'paired_differences.csv').open(
             'w', newline='', encoding='utf-8') as stream:
@@ -329,6 +672,112 @@ def write_paired_differences(root, trials):
         writer.writeheader()
         for row in output:
             writer.writerow({key: format_value(value) for key, value in row.items()})
+    return output
+
+
+def write_completion_comparison(root, trials):
+    """Write a post-hoc paired analysis of trajectory completion outcomes."""
+    indexed = {
+        (
+            trial['controller_family'], trial['gazebo_seed'],
+            trial['track'], trial['scenario'],
+        ): int(float(trial['track_complete']))
+        for trial in trials
+    }
+    controllers = {trial['controller_family'] for trial in trials}
+    conditions = sorted({
+        (trial['gazebo_seed'], trial['track'], trial['scenario'])
+        for trial in trials
+    })
+    output = []
+    for candidate, baseline in (
+            ('lqr', 'pid'), ('mpc', 'pid'), ('mpc', 'lqr')):
+        if candidate not in controllers or baseline not in controllers:
+            continue
+        condition_names = sorted({
+            (track, scenario) for _, track, scenario in conditions
+        })
+        for track, scenario in condition_names:
+            paired = []
+            for seed, condition_track, condition_scenario in conditions:
+                if (condition_track, condition_scenario) != (track, scenario):
+                    continue
+                candidate_value = indexed.get(
+                    (candidate, seed, track, scenario)
+                )
+                baseline_value = indexed.get(
+                    (baseline, seed, track, scenario)
+                )
+                if candidate_value is not None and baseline_value is not None:
+                    paired.append((candidate_value, baseline_value))
+
+            candidate_only = sum(a == 1 and b == 0 for a, b in paired)
+            baseline_only = sum(a == 0 and b == 1 for a, b in paired)
+            both_complete = sum(a == 1 and b == 1 for a, b in paired)
+            both_incomplete = sum(a == 0 and b == 0 for a, b in paired)
+            candidate_completed = sum(a for a, _ in paired)
+            baseline_completed = sum(b for _, b in paired)
+            count = len(paired)
+            p_value = exact_mcnemar_test(candidate_only, baseline_only)
+            output.append({
+                'inference_role': 'exploratory_post_hoc',
+                'holm_family': 'exploratory_completion',
+                'candidate': candidate,
+                'baseline': baseline,
+                'track': track,
+                'scenario': scenario,
+                'paired_samples': count,
+                'candidate_completed': candidate_completed,
+                'baseline_completed': baseline_completed,
+                'candidate_completion_rate': (
+                    candidate_completed / count if count else math.nan
+                ),
+                'baseline_completion_rate': (
+                    baseline_completed / count if count else math.nan
+                ),
+                'completion_rate_difference': (
+                    (candidate_completed - baseline_completed) / count
+                    if count else math.nan
+                ),
+                'candidate_only_completed': candidate_only,
+                'baseline_only_completed': baseline_only,
+                'both_completed': both_complete,
+                'both_incomplete': both_incomplete,
+                'discordant_pairs': candidate_only + baseline_only,
+                'test_method': 'exact_mcnemar',
+                'sign_flip_p_value': p_value,
+                'holm_family_size': 0,
+                'holm_adjusted_p_value': math.nan,
+                'holm_significant_0p05': 0,
+            })
+
+    # Completion was not part of the confirmatory plan. Holm correction is
+    # nevertheless applied over all post-hoc completion comparisons so the
+    # exploratory table does not understate its multiplicity.
+    apply_holm_correction(output)
+    fields = [
+        'inference_role', 'holm_family', 'candidate', 'baseline', 'track',
+        'scenario', 'paired_samples', 'candidate_completed',
+        'baseline_completed', 'candidate_completion_rate',
+        'baseline_completion_rate', 'completion_rate_difference',
+        'candidate_only_completed', 'baseline_only_completed',
+        'both_completed', 'both_incomplete', 'discordant_pairs',
+        'test_method', 'exact_mcnemar_p_value', 'holm_family_size',
+        'holm_adjusted_p_value', 'holm_significant_0p05',
+    ]
+    with (root / 'completion_comparison.csv').open(
+            'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for row in output:
+            exported = dict(row)
+            exported['exact_mcnemar_p_value'] = exported.pop(
+                'sign_flip_p_value'
+            )
+            writer.writerow({
+                key: format_value(exported[key]) for key in fields
+            })
+    return output
 
 
 def audit_protocol(root, trials, protocol):
@@ -336,6 +785,9 @@ def audit_protocol(root, trials, protocol):
     if not (root / 'protocol_source.tar.gz').is_file():
         issues.append('archived runtime source is missing')
     expected_controllers = set(protocol['controllers'].split())
+    expected_observation_duration = float(
+        protocol.get('fixed_observation_duration_s', '0.0')
+    )
     repetition_count = int(protocol['repetitions'])
     base_seed = int(protocol['base_gazebo_seed'])
     expected_conditions = set()
@@ -353,6 +805,22 @@ def audit_protocol(root, trials, protocol):
         conditions[(
             trial['gazebo_seed'], trial['track'], trial['scenario']
         )].append(trial)
+        runtime_duration = float(trial['fixed_observation_duration'])
+        if not math.isclose(
+                runtime_duration, expected_observation_duration,
+                rel_tol=0.0, abs_tol=1.0e-9):
+            issues.append(
+                f"{trial['controller_family']}:{trial['track']}:"
+                f"{trial['scenario']}: fixed observation duration "
+                f'{runtime_duration} differs from protocol '
+                f'{expected_observation_duration}'
+            )
+        if (expected_observation_duration > 0.0 and
+                trial['observation_horizon_reached'] != '1'):
+            issues.append(
+                f"{trial['controller_family']}:{trial['track']}:"
+                f"{trial['scenario']}: fixed observation horizon not reached"
+            )
 
     actual_conditions = set(conditions)
     for condition in sorted(expected_conditions - actual_conditions):
@@ -380,6 +848,15 @@ def audit_protocol(root, trials, protocol):
                 issues.append(
                     f'{condition}: inconsistent or missing {field}: {sorted(values)}'
                 )
+        analysis_durations = [
+            finite(row, 'analysis_observation_duration_s') for row in rows
+        ]
+        if (any(not math.isfinite(value) for value in analysis_durations) or
+                max(analysis_durations) - min(analysis_durations) > 0.05):
+            issues.append(
+                f'{condition}: controller analysis horizons differ: '
+                f'{analysis_durations}'
+            )
 
     configs = defaultdict(set)
     for trial in trials:
@@ -434,18 +911,11 @@ def audit_protocol(root, trials, protocol):
                 issues.append(
                     f'timed-reference parameter {parameter} is missing'
                 )
-                continue
-            values = {
-                controller: archived_values.get(controller, {}).get(
-                    parameter, ''
-                )
-                for controller in expected_controllers
-            }
-            if any(value != expected for value in values.values()):
-                issues.append(
-                    f'timed-reference parameter {parameter} differs from '
-                    f'authoritative value {expected}: {values}'
-                )
+        # Launch files load the reference YAML after the controller YAML.
+        # Therefore this archived file, whose runtime hash must be common to
+        # all trials above, is the effective source of truth. Controller YAML
+        # values are merely standalone fallbacks and may legitimately differ
+        # during an explicitly overridden stress campaign.
 
     path = root / 'protocol_audit.txt'
     with path.open('w', encoding='utf-8') as stream:
@@ -464,35 +934,142 @@ def audit_protocol(root, trials, protocol):
     return issues
 
 
-def write_text_summary(root, trials, grouped, issues):
+def write_hypothesis_family_summary(root, paired_rows):
+    families = defaultdict(list)
+    for row in paired_rows:
+        families[(row['inference_role'], row['holm_family'])].append(row)
+
+    fields = [
+        'inference_role', 'holm_family', 'tests', 'valid_tests',
+        'holm_significant_0p05', 'metrics', 'conditions',
+    ]
+    output = []
+    for (role, family), rows in sorted(families.items()):
+        valid = [
+            row for row in rows if math.isfinite(row['sign_flip_p_value'])
+        ]
+        output.append({
+            'inference_role': role,
+            'holm_family': family,
+            'tests': len(rows),
+            'valid_tests': len(valid),
+            'holm_significant_0p05': sum(
+                row['holm_significant_0p05'] for row in valid
+            ),
+            'metrics': ';'.join(sorted({row['metric'] for row in rows})),
+            'conditions': ';'.join(sorted({
+                f"{row['track']}:{row['scenario']}" for row in rows
+            })),
+        })
+
+    with (root / 'hypothesis_families.csv').open(
+            'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(output)
+    return output
+
+
+def write_confirmatory_results(root, paired_rows):
+    fields = [
+        'holm_family', 'candidate', 'baseline', 'track', 'scenario', 'metric',
+        'higher_is_better', 'paired_samples', 'candidate_mean', 'baseline_mean',
+        'mean_candidate_minus_baseline', 'relative_difference_percent',
+        'ci95_low', 'ci95_high', 'cohen_dz', 'sign_flip_p_value',
+        'holm_adjusted_p_value', 'holm_significant_0p05', 'mean_favors',
+        'practical_threshold', 'practical_interpretation',
+    ]
+    selected = [
+        row for row in paired_rows
+        if row['inference_role'] == 'confirmatory' and
+        math.isfinite(row['sign_flip_p_value'])
+    ]
+    with (root / 'confirmatory_results.csv').open(
+            'w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for row in selected:
+            writer.writerow({key: format_value(row[key]) for key in fields})
+    return selected
+
+
+def write_text_summary(root, trials, grouped, paired_rows, families, issues):
+    confirmatory = [
+        row for row in paired_rows
+        if row['inference_role'] == 'confirmatory' and
+        math.isfinite(row['sign_flip_p_value'])
+    ]
     with (root / 'summary.txt').open('w', encoding='utf-8') as stream:
         stream.write('PID--TVLQR--MPC PAIRED COMPARISON\n')
         stream.write(f'Individual scenario runs: {len(trials)}\n')
         stream.write(f'Aggregated conditions: {len(grouped)}\n')
         stream.write(f'Protocol audit issues: {len(issues)}\n')
+        stream.write(f'Hypothesis families: {len(families)}\n')
+        stream.write(f'Valid confirmatory pairwise tests: {len(confirmatory)}\n')
+        stream.write(
+            'Holm-significant confirmatory tests at 0.05: '
+            f'{sum(row["holm_significant_0p05"] for row in confirmatory)}\n'
+        )
         stream.write(
             'Confidence intervals use paired differences and the two-sided '
-            'Student-t 95% critical value. A negative candidate-minus-baseline '
-            'difference means that the candidate produced a smaller metric.\n'
+            'Student-t 95% critical value. Hypothesis tests use the exact '
+            'two-sided paired sign-flip distribution for n <= 20, with Holm '
+            'family-wise correction inside each analysis-plan family.\n'
+        )
+        stream.write(
+            'A negative candidate-minus-baseline difference favors the candidate '
+            'for every metric except window_recovery_fraction. Statistical '
+            'significance does not by itself establish engineering relevance.\n'
+        )
+        stream.write(
+            'Perturbation degradation equals perturbed minus matched nominal '
+            'performance for the same controller, track, and Gazebo seed.\n'
         )
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit(
-            'usage: analyze_controller_comparison.py RESULT_DIRECTORY'
-        )
-    root = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description='Analyze the paired PID--TVLQR--MPC campaign.'
+    )
+    parser.add_argument('result_directory', type=Path)
+    parser.add_argument(
+        '--position-practical-threshold-m', type=float, default=0.01,
+        help='Smallest practically relevant difference for position errors.',
+    )
+    parser.add_argument(
+        '--heading-practical-threshold-rad', type=float, default=0.02,
+        help='Smallest practically relevant difference for heading errors.',
+    )
+    arguments = parser.parse_args()
+    if (arguments.position_practical_threshold_m < 0.0 or
+            arguments.heading_practical_threshold_rad < 0.0):
+        parser.error('practical thresholds must be non-negative')
+
+    practical_thresholds = practical_threshold_map(
+        arguments.position_practical_threshold_m,
+        arguments.heading_practical_threshold_rad,
+    )
+
+    root = arguments.result_directory
     trials = load_trials(root)
+    add_nominal_degradation_metrics(trials)
     write_all_trials(root, trials)
     grouped = write_group_summary(root, trials)
-    write_paired_differences(root, trials)
+    paired_rows = write_paired_differences(
+        root, trials, practical_thresholds
+    )
+    write_completion_comparison(root, trials)
+    families = write_hypothesis_family_summary(root, paired_rows)
+    write_confirmatory_results(root, paired_rows)
     protocol = read_protocol(root)
     issues = audit_protocol(root, trials, protocol)
-    write_text_summary(root, trials, grouped, issues)
+    write_text_summary(root, trials, grouped, paired_rows, families, issues)
     print(f'Wrote {root / "all_runs.csv"}')
     print(f'Wrote {root / "group_summary.csv"}')
     print(f'Wrote {root / "paired_differences.csv"}')
+    print(f'Wrote {root / "hypothesis_families.csv"}')
+    print(f'Wrote {root / "confirmatory_results.csv"}')
+    print(f'Wrote {root / "completion_comparison.csv"}')
     print(f'Wrote {root / "protocol_audit.txt"}')
     if issues:
         raise SystemExit(f'protocol audit failed with {len(issues)} issue(s)')

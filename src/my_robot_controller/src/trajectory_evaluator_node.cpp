@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <deque>
@@ -11,9 +12,11 @@
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/float64.hpp"
 
 #include "my_robot_controller/trajectory_reference_manager.hpp"
+#include "my_robot_controller/wheel_slip_metrics.hpp"
 
 namespace
 {
@@ -41,6 +44,13 @@ struct PlanarPoseSample
   double yaw;
 };
 
+struct WheelVelocitySample
+{
+  double stamp{0.0};
+  double left_angular_velocity{0.0};
+  double right_angular_velocity{0.0};
+};
+
 /// Controller-independent comparison of EKF state and Gazebo world truth.
 class TrajectoryEvaluatorNode : public rclcpp::Node
 {
@@ -59,6 +69,12 @@ public:
     declare_parameter<double>("maximum_reference_linear_acceleration", 0.5);
     declare_parameter<double>("maximum_reference_linear_deceleration", 0.1);
     declare_parameter<double>("maximum_reference_angular_velocity", 1.5);
+    declare_parameter<std::string>("left_wheel_joint_name", "left_wheel_joint");
+    declare_parameter<std::string>("right_wheel_joint_name", "right_wheel_joint");
+    declare_parameter<double>("wheel_radius", 0.1);
+    declare_parameter<double>("wheel_separation", 0.35);
+    declare_parameter<double>("wheel_slip_speed_floor", 0.05);
+    declare_parameter<double>("maximum_joint_state_age", 0.1);
 
     const std::string path_file = get_parameter("csv_path").as_string();
     const std::string output_file = get_parameter("output_csv_path").as_string();
@@ -72,6 +88,24 @@ public:
     if (search_window < 1) {
       throw std::runtime_error("Evaluator search_window must be positive");
     }
+
+    left_wheel_joint_name_ = get_parameter("left_wheel_joint_name").as_string();
+    right_wheel_joint_name_ = get_parameter("right_wheel_joint_name").as_string();
+    slip_config_.wheel_radius = get_parameter("wheel_radius").as_double();
+    slip_config_.wheel_separation = get_parameter("wheel_separation").as_double();
+    slip_config_.minimum_speed_denominator =
+      get_parameter("wheel_slip_speed_floor").as_double();
+    maximum_joint_state_age_ = get_parameter("maximum_joint_state_age").as_double();
+    if (left_wheel_joint_name_.empty() || right_wheel_joint_name_.empty() ||
+      left_wheel_joint_name_ == right_wheel_joint_name_ ||
+      !std::isfinite(maximum_joint_state_age_) || maximum_joint_state_age_ <= 0.0)
+    {
+      throw std::runtime_error(
+              "Evaluator wheel names must be distinct and joint-state age must be positive");
+    }
+    // Validate geometry once during construction rather than failing from a
+    // callback after an experiment has already started.
+    my_robot_controller::calculate_wheel_slip_metrics({}, slip_config_);
 
     my_robot_controller::TrajectoryReferenceConfig reference_config;
     reference_config.path.search_window = static_cast<std::size_t>(search_window);
@@ -108,7 +142,14 @@ public:
       "estimated_x,estimated_y,"
       "estimated_yaw,aligned_truth_x,aligned_truth_y,aligned_truth_yaw,"
       "localization_position_error,localization_heading_error,"
-      "truth_linear_velocity,truth_angular_velocity\n";
+      "truth_linear_velocity,truth_angular_velocity,truth_lateral_velocity,"
+      "joint_state_stamp,joint_state_age,left_wheel_angular_velocity,"
+      "right_wheel_angular_velocity,left_wheel_tangential_velocity,"
+      "right_wheel_tangential_velocity,wheel_kinematic_linear_velocity,"
+      "wheel_kinematic_angular_velocity,left_longitudinal_slip_ratio,"
+      "right_longitudinal_slip_ratio,center_longitudinal_slip_ratio,"
+      "yaw_velocity_discrepancy_ratio,sideslip_angle_rad,"
+      "wheel_slip_sample_valid\n";
 
     filtered_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
       "odometry/filtered", 10,
@@ -116,6 +157,9 @@ public:
     truth_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
       "ground_truth/odom", 10,
       std::bind(&TrajectoryEvaluatorNode::truth_callback, this, std::placeholders::_1));
+    joint_state_subscriber_ = create_subscription<sensor_msgs::msg::JointState>(
+      "joint_states", 10,
+      std::bind(&TrajectoryEvaluatorNode::joint_state_callback, this, std::placeholders::_1));
     experiment_start_subscriber_ = create_subscription<std_msgs::msg::Float64>(
       "experiment_start_time", rclcpp::QoS(1).reliable().transient_local(),
       std::bind(
@@ -194,6 +238,44 @@ private:
     filtered_received_ = true;
   }
 
+  void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr message)
+  {
+    if (message->name.size() != message->velocity.size()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Ignoring joint state whose name and velocity arrays have different sizes");
+      return;
+    }
+    const auto left = std::find(
+      message->name.begin(), message->name.end(), left_wheel_joint_name_);
+    const auto right = std::find(
+      message->name.begin(), message->name.end(), right_wheel_joint_name_);
+    if (left == message->name.end() || right == message->name.end()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Waiting for wheel joints '%s' and '%s' in joint_states",
+        left_wheel_joint_name_.c_str(), right_wheel_joint_name_.c_str());
+      return;
+    }
+
+    const auto left_index = static_cast<std::size_t>(
+      std::distance(message->name.begin(), left));
+    const auto right_index = static_cast<std::size_t>(
+      std::distance(message->name.begin(), right));
+    const double stamp = rclcpp::Time(message->header.stamp).seconds();
+    const double left_velocity = message->velocity[left_index];
+    const double right_velocity = message->velocity[right_index];
+    if (!std::isfinite(stamp) || !std::isfinite(left_velocity) ||
+      !std::isfinite(right_velocity))
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000, "Ignoring non-finite wheel joint state");
+      return;
+    }
+    wheel_sample_ = {stamp, left_velocity, right_velocity};
+    wheel_sample_received_ = true;
+  }
+
   void truth_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
     if (!finite_planar_pose(*message)) {
@@ -214,9 +296,14 @@ private:
     // P3D reports linear velocity in the world frame. Rotate its horizontal
     // components onto the robot's forward axis so terminal settling can use the
     // same longitudinal-velocity convention as the controller and encoder.
+    const double truth_world_linear_x = message->twist.twist.linear.x;
+    const double truth_world_linear_y = message->twist.twist.linear.y;
     const double truth_linear_velocity =
-      std::cos(truth_yaw) * message->twist.twist.linear.x +
-      std::sin(truth_yaw) * message->twist.twist.linear.y;
+      std::cos(truth_yaw) * truth_world_linear_x +
+      std::sin(truth_yaw) * truth_world_linear_y;
+    const double truth_lateral_velocity =
+      -std::sin(truth_yaw) * truth_world_linear_x +
+      std::cos(truth_yaw) * truth_world_linear_y;
     const double truth_angular_velocity = message->twist.twist.angular.z;
     truth_history_.push_back({stamp, truth_x, truth_y, truth_yaw});
     // Twenty seconds is far longer than the expected estimator latency while
@@ -252,6 +339,30 @@ private:
       }
     }
 
+    double joint_state_age = missing;
+    my_robot_controller::WheelSlipResult slip_result;
+    bool wheel_slip_sample_valid = false;
+    if (wheel_sample_received_) {
+      joint_state_age = stamp - wheel_sample_.stamp;
+      if (joint_state_age >= 0.0 && joint_state_age <= maximum_joint_state_age_) {
+        slip_result = my_robot_controller::calculate_wheel_slip_metrics(
+          {
+            wheel_sample_.left_angular_velocity,
+            wheel_sample_.right_angular_velocity,
+            truth_world_linear_x,
+            truth_world_linear_y,
+            truth_yaw,
+            truth_angular_velocity
+          },
+          slip_config_);
+        wheel_slip_sample_valid = true;
+      }
+    }
+
+    const auto slip_or_missing = [wheel_slip_sample_valid, missing](double value) {
+        return wheel_slip_sample_valid ? value : missing;
+      };
+
     output_csv_ << elapsed_time << ',' << stamp << ',' <<
       truth_x << ',' << truth_y << ',' << truth_yaw << ',' <<
       reference.trajectory.position.x << ',' << reference.trajectory.position.y << ',' <<
@@ -273,7 +384,23 @@ private:
       (filtered_received_ ? estimated_yaw_ : missing) << ',' <<
       aligned_truth.x << ',' << aligned_truth.y << ',' << aligned_truth.yaw << ',' <<
       localization_position_error << ',' << localization_heading_error << ',' <<
-      truth_linear_velocity << ',' << truth_angular_velocity << '\n';
+      truth_linear_velocity << ',' << truth_angular_velocity << ',' <<
+      truth_lateral_velocity << ',' <<
+      (wheel_sample_received_ ? wheel_sample_.stamp : missing) << ',' <<
+      joint_state_age << ',' <<
+      (wheel_sample_received_ ? wheel_sample_.left_angular_velocity : missing) << ',' <<
+      (wheel_sample_received_ ? wheel_sample_.right_angular_velocity : missing) << ',' <<
+      slip_or_missing(slip_result.left_wheel_tangential_velocity) << ',' <<
+      slip_or_missing(slip_result.right_wheel_tangential_velocity) << ',' <<
+      slip_or_missing(slip_result.wheel_kinematic_linear_velocity) << ',' <<
+      slip_or_missing(slip_result.wheel_kinematic_angular_velocity) << ',' <<
+      slip_or_missing(slip_result.left_longitudinal_slip_ratio) << ',' <<
+      slip_or_missing(slip_result.right_longitudinal_slip_ratio) << ',' <<
+      slip_or_missing(slip_result.center_longitudinal_slip_ratio) << ',' <<
+      slip_or_missing(slip_result.yaw_velocity_discrepancy_ratio) << ',' <<
+      (wheel_slip_sample_valid ? slip_result.sideslip_angle :
+    std::atan2(truth_lateral_velocity, truth_linear_velocity)) << ',' <<
+      (wheel_slip_sample_valid ? 1 : 0) << '\n';
 
     ++sample_count_;
     if (sample_count_ % 30u == 0u) {
@@ -286,7 +413,14 @@ private:
   std::deque<PlanarPoseSample> truth_history_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr filtered_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr truth_subscriber_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr experiment_start_subscriber_;
+
+  my_robot_controller::WheelSlipConfig slip_config_;
+  WheelVelocitySample wheel_sample_;
+  std::string left_wheel_joint_name_;
+  std::string right_wheel_joint_name_;
+  double maximum_joint_state_age_{0.1};
 
   double previous_truth_stamp_{0.0};
   double experiment_start_stamp_{0.0};
@@ -296,6 +430,7 @@ private:
   double estimated_yaw_{0.0};
   bool truth_received_{false};
   bool filtered_received_{false};
+  bool wheel_sample_received_{false};
   bool experiment_started_{false};
   std::size_t sample_count_{0u};
 };

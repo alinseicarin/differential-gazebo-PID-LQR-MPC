@@ -37,6 +37,14 @@ BASE_NOISE_SEED="${COMPARISON_BASE_NOISE_SEED:-9000}"
 GUI="${COMPARISON_GUI:-false}"
 RESUME="${COMPARISON_RESUME:-true}"
 ROS_DOMAIN="${COMPARISON_ROS_DOMAIN_ID:-91}"
+STUDY_ROLE="${COMPARISON_STUDY_ROLE:-primary_baseline}"
+POSITION_THRESHOLD_M="${COMPARISON_POSITION_PRACTICAL_THRESHOLD_M:-0.01}"
+HEADING_THRESHOLD_RAD="${COMPARISON_HEADING_PRACTICAL_THRESHOLD_RAD:-0.02}"
+POSITION_THRESHOLD_BASIS="${COMPARISON_POSITION_THRESHOLD_BASIS:-absolute_predeclared}"
+POSITION_SENSITIVITY_LOW_M="${COMPARISON_POSITION_SENSITIVITY_LOW_M:-${POSITION_THRESHOLD_M}}"
+POSITION_SENSITIVITY_HIGH_M="${COMPARISON_POSITION_SENSITIVITY_HIGH_M:-${POSITION_THRESHOLD_M}}"
+ANGULAR_PULSE_START_DELAYS="${COMPARISON_ANGULAR_PULSE_START_DELAYS:-6.0;18.0;30.0}"
+FIXED_OBSERVATION_DURATION="${COMPARISON_FIXED_OBSERVATION_DURATION:-0.0}"
 
 if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "${BASE_GAZEBO_SEED}" =~ ^[0-9]+$ ]] ||
@@ -44,9 +52,15 @@ if ! [[ "${REPETITIONS}" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "${ROS_DOMAIN}" =~ ^[0-9]+$ ]] ||
   ((ROS_DOMAIN > 232)) ||
   [[ "${GUI}" != "true" && "${GUI}" != "false" ]] ||
-  [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]]
+  [[ "${RESUME}" != "true" && "${RESUME}" != "false" ]] ||
+  ! [[ "${POSITION_THRESHOLD_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${HEADING_THRESHOLD_RAD}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${POSITION_SENSITIVITY_LOW_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${POSITION_SENSITIVITY_HIGH_M}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${FIXED_OBSERVATION_DURATION}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+  ! [[ "${ANGULAR_PULSE_START_DELAYS}" =~ ^[0-9]+([.][0-9]+)?(\;[0-9]+([.][0-9]+)?)*$ ]]
 then
-  echo "Invalid repetitions, seed, GUI, or resume selector" >&2
+  echo "Invalid repetitions, seed, GUI, resume, or practical threshold" >&2
   exit 2
 fi
 
@@ -77,6 +91,12 @@ done
 
 TRACK_ROOT="/home/ws/install/my_robot_controller/share/my_robot_controller/tracks"
 CONFIG_ROOT="/home/ws/install/my_robot_controller/share/my_robot_controller/config"
+REFERENCE_CONFIG_PATH="${COMPARISON_REFERENCE_CONFIG_PATH:-${CONFIG_ROOT}/trajectory_reference.yaml}"
+if [[ ! -f "${REFERENCE_CONFIG_PATH}" ]]; then
+  echo "Reference configuration does not exist: ${REFERENCE_CONFIG_PATH}" >&2
+  exit 2
+fi
+REFERENCE_CONFIG_SHA256="$(sha256sum "${REFERENCE_CONFIG_PATH}" | awk '{print $1}')"
 
 # Hash every runtime-relevant source, launch, configuration, script, and track.
 # Resume is allowed only when this fingerprint and the complete protocol agree,
@@ -89,7 +109,12 @@ SOURCE_FINGERPRINT="$({
 PROTOCOL_SIGNATURE="$(printf '%s\n' \
   "${CONTROLLER_TEXT}" "${NOMINAL_TRACK_TEXT}" "${ROBUSTNESS_TRACK}" \
   "${ROBUSTNESS_SCENARIOS}" "${REPETITIONS}" "${BASE_GAZEBO_SEED}" \
-  "${BASE_NOISE_SEED}" "${ROS_DOMAIN}" "${SOURCE_FINGERPRINT}" | \
+  "${BASE_NOISE_SEED}" "${ROS_DOMAIN}" "${STUDY_ROLE}" \
+  "${POSITION_THRESHOLD_M}" "${HEADING_THRESHOLD_RAD}" \
+  "${POSITION_THRESHOLD_BASIS}" "${POSITION_SENSITIVITY_LOW_M}" \
+  "${POSITION_SENSITIVITY_HIGH_M}" "${ANGULAR_PULSE_START_DELAYS}" \
+  "${FIXED_OBSERVATION_DURATION}" \
+  "${REFERENCE_CONFIG_SHA256}" "${SOURCE_FINGERPRINT}" | \
   sha256sum | awk '{print $1}')"
 if [[ -f "${RESULT_DIR}/protocol.txt" ]]; then
   previous_signature="$(awk -F= '$1 == "protocol_signature" {print $2}' \
@@ -119,7 +144,7 @@ for controller in "${controllers[@]}"; do
   esac
   cp "${source_config}" "${RESULT_DIR}/protocol_configs/${controller}.yaml"
 done
-cp "${CONFIG_ROOT}/trajectory_reference.yaml" \
+cp "${REFERENCE_CONFIG_PATH}" \
   "${RESULT_DIR}/protocol_configs/trajectory_reference.yaml"
 
 # The source line is 20 m long. Freeze a 5 m copy once so every controller and
@@ -149,6 +174,15 @@ track_path()
   echo "base_gazebo_seed=${BASE_GAZEBO_SEED}"
   echo "base_noise_seed=${BASE_NOISE_SEED}"
   echo "ros_domain_id=${ROS_DOMAIN}"
+  echo "study_role=${STUDY_ROLE}"
+  echo "position_practical_threshold_m=${POSITION_THRESHOLD_M}"
+  echo "heading_practical_threshold_rad=${HEADING_THRESHOLD_RAD}"
+  echo "position_threshold_basis=${POSITION_THRESHOLD_BASIS}"
+  echo "position_sensitivity_low_m=${POSITION_SENSITIVITY_LOW_M}"
+  echo "position_sensitivity_high_m=${POSITION_SENSITIVITY_HIGH_M}"
+  echo "angular_pulse_start_delays_s=${ANGULAR_PULSE_START_DELAYS}"
+  echo "fixed_observation_duration_s=${FIXED_OBSERVATION_DURATION}"
+  echo "reference_config_sha256=${REFERENCE_CONFIG_SHA256}"
   echo "source_fingerprint=${SOURCE_FINGERPRINT}"
   echo "protocol_signature=${PROTOCOL_SIGNATURE}"
   echo "controller order rotates once per repetition"
@@ -191,6 +225,9 @@ run_suite()
   PERTURBATION_GAZEBO_SEED="${gazebo_seed}" \
   PERTURBATION_NOISE_SEED="${noise_seed}" \
   PERTURBATION_TRACK_PATH="$(track_path "${track}")" \
+  PERTURBATION_REFERENCE_CONFIG_PATH="${REFERENCE_CONFIG_PATH}" \
+  PERTURBATION_ANGULAR_PULSE_START_DELAYS="${ANGULAR_PULSE_START_DELAYS}" \
+  PERTURBATION_FIXED_OBSERVATION_DURATION="${FIXED_OBSERVATION_DURATION}" \
   PERTURBATION_TIMEOUT_SECONDS=90 \
     bash scripts/run_pid_perturbation_suite.sh "${output}"
 }
@@ -217,5 +254,8 @@ for repetition in $(seq 1 "${REPETITIONS}"); do
   done
 done
 
-python3 scripts/analyze_controller_comparison.py "${RESULT_DIR}"
+python3 scripts/analyze_controller_comparison.py "${RESULT_DIR}" \
+  --position-practical-threshold-m "${POSITION_THRESHOLD_M}" \
+  --heading-practical-threshold-rad "${HEADING_THRESHOLD_RAD}"
+python3 scripts/generate_controller_comparison_report.py "${RESULT_DIR}"
 echo "Comparison campaign complete: ${RESULT_DIR}/group_summary.csv"

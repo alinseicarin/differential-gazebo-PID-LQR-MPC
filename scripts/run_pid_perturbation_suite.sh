@@ -23,6 +23,9 @@ COMMON_GUI="${PERTURBATION_GUI:-false}"
 COMMON_TRACK="${PERTURBATION_TRACK_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_5_figure_eight.csv}"
 COMMON_GAZEBO_SEED="${PERTURBATION_GAZEBO_SEED:-44}"
 COMMON_NOISE_SEED="${PERTURBATION_NOISE_SEED:-2026}"
+COMMON_REFERENCE_CONFIG="${PERTURBATION_REFERENCE_CONFIG_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/config/trajectory_reference.yaml}"
+ANGULAR_PULSE_START_DELAYS="${PERTURBATION_ANGULAR_PULSE_START_DELAYS:-6.0;18.0;30.0}"
+FIXED_OBSERVATION_DURATION="${PERTURBATION_FIXED_OBSERVATION_DURATION:-0.0}"
 
 case "${CONTROLLER_FAMILY}" in
   pid)
@@ -71,7 +74,7 @@ run_case()
       domain="additive_actuator_fault"
       command_enabled="true"
       start="6.0"
-      start_delays="6.0;18.0;30.0"
+      start_delays="${ANGULAR_PULSE_START_DELAYS}"
       duration="1.0"
       angular_bias="0.8"
       ;;
@@ -125,6 +128,8 @@ run_case()
     PERTURBATION_CONTROLLER_FAMILY="${CONTROLLER_FAMILY}" \
     PERTURBATION_TRACK_PATH="${COMMON_TRACK}" \
     PERTURBATION_CONFIG_PATH="${COMMON_CONFIG}" \
+    PERTURBATION_REFERENCE_CONFIG_PATH="${COMMON_REFERENCE_CONFIG}" \
+    PERTURBATION_FIXED_OBSERVATION_DURATION="${FIXED_OBSERVATION_DURATION}" \
     PERTURBATION_GAZEBO_SEED="${COMMON_GAZEBO_SEED}" \
     COMMAND_FAULT_ENABLED="${command_enabled}" \
     FEEDBACK_FAULT_ENABLED="${feedback_enabled}" \

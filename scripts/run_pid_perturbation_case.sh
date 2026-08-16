@@ -21,6 +21,7 @@ CONTROLLER_FAMILY="${PERTURBATION_CONTROLLER_FAMILY:-pid}"
 GUI="${PERTURBATION_GUI:-false}"
 GAZEBO_SEED="${PERTURBATION_GAZEBO_SEED:-42}"
 TIMEOUT_SECONDS="${PERTURBATION_TIMEOUT_SECONDS:-75}"
+FIXED_OBSERVATION_DURATION="${PERTURBATION_FIXED_OBSERVATION_DURATION:-0.0}"
 MPC_HORIZON_STEPS="${MPC_PREDICTION_HORIZON_STEPS:-}"
 CONTROLLER_EXTRA_ARGS=()
 
@@ -93,6 +94,10 @@ if [[ ! -f "${TRACK_SOURCE}" ]]; then
 fi
 if [[ ! -f "${CONFIG_PATH}" || ! -f "${REFERENCE_CONFIG_PATH}" ]]; then
   echo "Controller or reference configuration does not exist"
+  exit 2
+fi
+if ! [[ "${FIXED_OBSERVATION_DURATION}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "Invalid fixed observation duration: ${FIXED_OBSERVATION_DURATION}"
   exit 2
 fi
 cp "${TRACK_SOURCE}" "${TRACK_PATH}"
@@ -182,14 +187,31 @@ ACTIVE_CONTROL_PID=$!
 
 complete=0
 graph_failed=0
+observation_horizon_reached=0
 for second in $(seq 1 "${TIMEOUT_SECONDS}"); do
   if grep -q 'Trajectory complete' "${CONTROL_LOG}" 2>/dev/null; then
     complete=1
-    break
+    if awk -v duration="${FIXED_OBSERVATION_DURATION}" \
+      'BEGIN {exit !(duration <= 0.0)}'
+    then
+      break
+    fi
   fi
   if ! kill -0 "${ACTIVE_CONTROL_PID}" 2>/dev/null; then
     graph_failed=1
     break
+  fi
+  if awk -v duration="${FIXED_OBSERVATION_DURATION}" \
+    'BEGIN {exit !(duration > 0.0)}' && [[ -s "${GROUND_TRUTH_CSV}" ]]
+  then
+    current_experiment_time="$(awk -F, 'END {print $1}' "${GROUND_TRUTH_CSV}")"
+    if awk -v current="${current_experiment_time}" \
+      -v duration="${FIXED_OBSERVATION_DURATION}" \
+      'BEGIN {exit !(current >= duration)}'
+    then
+      observation_horizon_reached=1
+      break
+    fi
   fi
   if ((second % 15 == 0)); then
     echo "[${SCENARIO_NAME}] waiting: ${second}s"
@@ -197,9 +219,9 @@ for second in $(seq 1 "${TIMEOUT_SECONDS}"); do
   sleep 1
 done
 
-# Preserve two seconds of post-completion ground truth so endpoint motion and
-# settling remain visible in the dataset. All predefined faults end earlier.
-if [[ "${complete}" -eq 1 ]]; then
+# Without a fixed horizon, preserve two seconds after completion. With a fixed
+# horizon, all controllers remain observable until the same experiment time.
+if [[ "${complete}" -eq 1 && "${observation_horizon_reached}" -eq 0 ]]; then
   sleep 2
 fi
 
@@ -213,6 +235,13 @@ if [[ "${graph_failed}" -eq 1 ]]; then
   tail -n 60 "${CONTROL_LOG}" || true
   exit 1
 fi
+if awk -v duration="${FIXED_OBSERVATION_DURATION}" \
+  'BEGIN {exit !(duration > 0.0)}' &&
+  [[ "${observation_horizon_reached}" -ne 1 ]]
+then
+  echo "[${SCENARIO_NAME}] fixed observation horizon was not reached"
+  exit 1
+fi
 if [[ ! -s "${CONTROLLER_CSV}" || ! -s "${COMMAND_CSV}" ||
   ! -s "${ODOMETRY_CSV}" || ! -s "${GROUND_TRUTH_CSV}" ]]
 then
@@ -222,12 +251,14 @@ then
 fi
 
 {
-  echo "scenario,fault_domain,fault_start,fault_duration,track_complete,command_fault_enabled,feedback_fault_enabled,angular_bias,left_wheel_effectiveness,right_wheel_effectiveness,command_delay,position_noise_stddev,yaw_noise_stddev,noise_seed,gazebo_seed,controller_family,mpc_horizon_steps,controller_config_sha256,reference_config_sha256,track_sha256,fault_start_delays,fault_persistent,odometry_x_bias,odometry_y_bias,odometry_yaw_bias"
-  echo "${SCENARIO_NAME},${FAULT_DOMAIN},${FAULT_START_DELAY},${FAULT_DURATION},${complete},${COMMAND_FAULT_ENABLED},${FEEDBACK_FAULT_ENABLED},${ANGULAR_VELOCITY_BIAS},${LEFT_WHEEL_EFFECTIVENESS},${RIGHT_WHEEL_EFFECTIVENESS},${COMMAND_DELAY},${POSITION_NOISE_STDDEV},${YAW_NOISE_STDDEV},${NOISE_SEED},${GAZEBO_SEED},${CONTROLLER_FAMILY},${MPC_HORIZON_STEPS},${CONFIG_SHA256},${REFERENCE_CONFIG_SHA256},${TRACK_SHA256},${FAULT_START_DELAYS},${FAULT_PERSISTENT},${ODOMETRY_X_BIAS},${ODOMETRY_Y_BIAS},${ODOMETRY_YAW_BIAS}"
+  echo "scenario,fault_domain,fault_start,fault_duration,track_complete,command_fault_enabled,feedback_fault_enabled,angular_bias,left_wheel_effectiveness,right_wheel_effectiveness,command_delay,position_noise_stddev,yaw_noise_stddev,noise_seed,gazebo_seed,controller_family,mpc_horizon_steps,controller_config_sha256,reference_config_sha256,track_sha256,fault_start_delays,fault_persistent,odometry_x_bias,odometry_y_bias,odometry_yaw_bias,fixed_observation_duration,observation_horizon_reached"
+  echo "${SCENARIO_NAME},${FAULT_DOMAIN},${FAULT_START_DELAY},${FAULT_DURATION},${complete},${COMMAND_FAULT_ENABLED},${FEEDBACK_FAULT_ENABLED},${ANGULAR_VELOCITY_BIAS},${LEFT_WHEEL_EFFECTIVENESS},${RIGHT_WHEEL_EFFECTIVENESS},${COMMAND_DELAY},${POSITION_NOISE_STDDEV},${YAW_NOISE_STDDEV},${NOISE_SEED},${GAZEBO_SEED},${CONTROLLER_FAMILY},${MPC_HORIZON_STEPS},${CONFIG_SHA256},${REFERENCE_CONFIG_SHA256},${TRACK_SHA256},${FAULT_START_DELAYS},${FAULT_PERSISTENT},${ODOMETRY_X_BIAS},${ODOMETRY_Y_BIAS},${ODOMETRY_YAW_BIAS},${FIXED_OBSERVATION_DURATION},${observation_horizon_reached}"
 } > "${METADATA_CSV}"
 
 if [[ "${complete}" -eq 1 ]]; then
   echo "[${SCENARIO_NAME}] complete"
+elif [[ "${observation_horizon_reached}" -eq 1 ]]; then
+  echo "[${SCENARIO_NAME}] trajectory incomplete at fixed observation horizon ${FIXED_OBSERVATION_DURATION}s"
 else
   echo "[${SCENARIO_NAME}] did not complete within ${TIMEOUT_SECONDS}s"
 fi

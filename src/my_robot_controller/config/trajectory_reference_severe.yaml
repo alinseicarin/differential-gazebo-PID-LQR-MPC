@@ -1,0 +1,18 @@
+# Predeclared timed-reference settings for the secondary severe campaign.
+#
+# The nominal limit is raised to the common 1.0 m/s actuator limit, while the
+# established curvature policy remains unchanged. On the figure-eight this
+# deliberately produces lower local speeds in tight bends; the experiment
+# stresses all three controllers with the same feasible reference instead of
+# commanding an unattainable constant speed.
+/**:
+  ros__parameters:
+    search_window: 20
+    reference_linear_velocity: 1.0
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.0
+    maximum_reference_curvature: 5.0
+    trajectory_spatial_step: 0.01
+    maximum_reference_linear_acceleration: 0.5
+    maximum_reference_linear_deceleration: 0.1
+    maximum_reference_angular_velocity: 1.5

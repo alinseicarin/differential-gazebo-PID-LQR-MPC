@@ -152,6 +152,18 @@ def audit_robot_model(audit, configs, reference):
     wheel_width = float(wheel.attrib['length'])
     audit.require(wheel_radius > 0.0 and wheel_width > 0.0, 'wheel dimensions are not positive')
 
+    evaluator_defaults = declared_defaults(
+        CONTROLLER_ROOT / 'src' / 'trajectory_evaluator_node.cpp'
+    )
+    audit.close(evaluator_defaults.get('wheel_radius'), wheel_radius,
+                'slip evaluator/URDF wheel radius')
+    audit.close(evaluator_defaults.get('wheel_separation'), separation,
+                'slip evaluator/URDF wheel separation')
+    audit.equal(evaluator_defaults.get('left_wheel_joint_name'),
+                'left_wheel_joint', 'slip evaluator left joint name')
+    audit.equal(evaluator_defaults.get('right_wheel_joint_name'),
+                'right_wheel_joint', 'slip evaluator right joint name')
+
     plugins = {
         plugin.attrib['name']: plugin
         for gazebo in robot.findall('gazebo')
@@ -409,6 +421,10 @@ def audit_launch_parity(audit, configs, wheel_separation):
             f'{argument}:=' in runner,
             f'perturbation runner does not forward {argument}',
         )
+    audit.require(
+        'PERTURBATION_FIXED_OBSERVATION_DURATION' in runner,
+        'perturbation runner lacks a common fixed observation horizon',
+    )
 
     suite = (ROOT / 'scripts' / 'run_pid_perturbation_suite.sh').read_text(
         encoding='utf-8'
@@ -423,6 +439,43 @@ def audit_launch_parity(audit, configs, wheel_separation):
     audit.require(
         '6.0;18.0;30.0' in suite,
         'angular pulse train does not retain its three motion-phase starts',
+    )
+
+    comparison_runner = (
+        ROOT / 'scripts' / 'run_controller_comparison.sh'
+    ).read_text(encoding='utf-8')
+    for postprocessor in (
+            'analyze_controller_comparison.py',
+            'generate_controller_comparison_report.py'):
+        audit.require(
+            postprocessor in comparison_runner,
+            f'comparison campaign does not run {postprocessor}',
+        )
+    audit.require(
+        'PERTURBATION_REFERENCE_CONFIG_PATH="${REFERENCE_CONFIG_PATH}"' in
+        comparison_runner,
+        'comparison campaign does not forward its selected reference config',
+    )
+    audit.require(
+        'cp "${REFERENCE_CONFIG_PATH}"' in comparison_runner,
+        'comparison campaign does not archive its selected reference config',
+    )
+
+    suite_runner = (
+        ROOT / 'scripts' / 'run_pid_perturbation_suite.sh'
+    ).read_text(encoding='utf-8')
+    audit.require(
+        'PERTURBATION_REFERENCE_CONFIG_PATH="${COMMON_REFERENCE_CONFIG}"' in
+        suite_runner,
+        'perturbation suite drops the selected reference config',
+    )
+
+    benchmark_runner = (ROOT / 'scripts' / 'run_pid_benchmarks.sh').read_text(
+        encoding='utf-8'
+    )
+    audit.require(
+        'reference_config_path:="${REFERENCE_CONFIG_PATH}"' in benchmark_runner,
+        'PID benchmark does not forward its selected reference configuration',
     )
 
 

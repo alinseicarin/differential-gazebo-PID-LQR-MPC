@@ -45,6 +45,38 @@ def enabled(metadata, key):
     return metadata.get(key, '').strip().lower() == 'true'
 
 
+def crop_to_observation_horizon(rows, time_key, duration):
+    """Exclude polling overshoot beyond a predeclared experiment horizon."""
+    if not math.isfinite(duration) or duration <= 0.0:
+        return rows
+    return [
+        row for row in rows
+        if math.isfinite(number(row, time_key)) and
+        number(row, time_key) <= duration
+    ]
+
+
+def inferred_reference_observation_horizon(rows, settling_duration=2.0):
+    """Return a common reference-motion horizon plus a settling interval.
+
+    Legacy campaigns stopped when each controller declared completion, so the
+    polling loop left between roughly two and three seconds of terminal data.
+    The timed reference itself is controller independent. Its last moving
+    sample therefore provides a reproducible cutoff that prevents a slower
+    completion from receiving a longer RMS integration interval.
+    """
+    moving_times = [
+        number(row, 'time') for row in rows
+        if (
+            abs(number(row, 'reference_linear_velocity')) > 1.0e-9 or
+            abs(number(row, 'reference_angular_velocity')) > 1.0e-9
+        ) and math.isfinite(number(row, 'time'))
+    ]
+    if not moving_times:
+        return math.nan
+    return max(moving_times) + settling_duration
+
+
 def configured_fault_starts(metadata):
     repeated = metadata.get('fault_start_delays', '').strip()
     if repeated:
@@ -203,8 +235,7 @@ def baseline_deviation(rows, baseline_rows, windows, persistent):
     return peak_cte, peak_heading, recovery, details
 
 
-def command_metrics(path):
-    rows = read_rows(path)
+def command_metrics(rows):
     applied_angular = [
         abs(number(row, 'applied_angular_command')) for row in rows
         if math.isfinite(number(row, 'applied_angular_command'))
@@ -236,8 +267,7 @@ def command_metrics(path):
     )
 
 
-def noise_metrics(path):
-    rows = read_rows(path)
+def noise_metrics(rows):
     position_squared = []
     yaw_squared = []
     for row in rows:
@@ -405,7 +435,24 @@ def main():
     nominal_path = root / 'nominal' / 'ground_truth.csv'
     if not nominal_path.is_file():
         raise SystemExit(f'nominal baseline missing: {nominal_path}')
-    baseline_rows = read_rows(nominal_path)
+    nominal_metadata_path = root / 'nominal' / 'scenario_metadata.csv'
+    if not nominal_metadata_path.is_file():
+        raise SystemExit(f'nominal metadata missing: {nominal_metadata_path}')
+    nominal_metadata = read_rows(nominal_metadata_path)[0]
+    nominal_horizon = number(
+        nominal_metadata, 'fixed_observation_duration'
+    )
+    raw_baseline_rows = read_rows(nominal_path)
+    analysis_horizon = nominal_horizon
+    if not math.isfinite(analysis_horizon) or analysis_horizon <= 0.0:
+        analysis_horizon = inferred_reference_observation_horizon(
+            raw_baseline_rows
+        )
+    if not math.isfinite(analysis_horizon) or analysis_horizon <= 0.0:
+        raise SystemExit('could not determine a positive analysis horizon')
+    baseline_rows = crop_to_observation_horizon(
+        raw_baseline_rows, 'time', analysis_horizon
+    )
 
     output_rows = []
     window_rows = []
@@ -422,10 +469,37 @@ def main():
             continue
 
         metadata = read_rows(metadata_path)[0]
-        controller_rows = read_rows(controller_path)
-        rows = read_rows(truth_path)
-        command_rows = read_rows(command_path)
-        odometry_rows = read_rows(odometry_path)
+        declared_observation_horizon = number(
+            metadata, 'fixed_observation_duration'
+        )
+        observation_horizon = declared_observation_horizon
+        if (not math.isfinite(observation_horizon) or
+                observation_horizon <= 0.0):
+            observation_horizon = analysis_horizon
+        raw_truth_rows = read_rows(truth_path)
+        controller_rows = crop_to_observation_horizon(
+            read_rows(controller_path), 'time', observation_horizon
+        )
+        rows = crop_to_observation_horizon(
+            raw_truth_rows, 'time', observation_horizon
+        )
+        command_rows = crop_to_observation_horizon(
+            read_rows(command_path), 'time', observation_horizon
+        )
+        odometry_rows = crop_to_observation_horizon(
+            read_rows(odometry_path), 'time', observation_horizon
+        )
+        if math.isfinite(observation_horizon) and observation_horizon > 0.0:
+            recorded_end = max(
+                (number(row, 'time') for row in raw_truth_rows),
+                default=math.nan
+            )
+            if (not math.isfinite(recorded_end) or
+                    recorded_end < observation_horizon - 0.1):
+                audit_issues.append(
+                    f'{scenario_dir.name}: ground-truth data does not reach '
+                    f'the {observation_horizon:.3f} s analysis horizon'
+                )
         windows, persistent = fault_windows(metadata, rows)
         is_nominal = metadata['scenario'] == 'nominal'
         audit_issues.extend(audit_fault_timing(
@@ -474,8 +548,8 @@ def main():
         (
             max_angular, saturation_fraction, active_samples,
             normalized_command_activity,
-        ) = command_metrics(command_path)
-        position_noise_rms, yaw_noise_rms = noise_metrics(odometry_path)
+        ) = command_metrics(command_rows)
+        position_noise_rms, yaw_noise_rms = noise_metrics(odometry_rows)
 
         output_rows.append({
             'case': scenario_dir.name,
@@ -493,6 +567,7 @@ def main():
             ),
             'persistent_fault': int(persistent),
             'track_complete': int(metadata['track_complete']),
+            'analysis_observation_duration_s': observation_horizon,
             'cte_rmse_m': time_rms(rows, 'true_cross_track_error'),
             'heading_rmse_rad': time_rms(rows, 'true_path_heading_error'),
             'temporal_position_rmse_m': time_rms(rows, 'true_position_error'),

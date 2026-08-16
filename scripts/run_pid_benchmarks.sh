@@ -32,6 +32,7 @@ mkdir -p "${RESULT_DIR}"
 GUI="${PID_BENCHMARK_GUI:-false}"
 REPETITIONS="${PID_BENCHMARK_REPETITIONS:-3}"
 BASE_SEED="${PID_BENCHMARK_BASE_SEED:-42}"
+REFERENCE_CONFIG_PATH="${PID_BENCHMARK_REFERENCE_CONFIG_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/config/trajectory_reference.yaml}"
 SETTLING_SIM_TIME="${PID_BENCHMARK_SETTLING_TIME:-2.0}"
 SETTLING_LINEAR_THRESHOLD="${PID_BENCHMARK_SETTLING_LINEAR_THRESHOLD:-0.01}"
 SETTLING_ANGULAR_THRESHOLD="${PID_BENCHMARK_SETTLING_ANGULAR_THRESHOLD:-0.02}"
@@ -43,6 +44,10 @@ if [[ "${GUI}" != "true" && "${GUI}" != "false" ]] ||
   ! [[ "${SETTLING_WALL_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]
 then
   echo "GUI must be true/false; repetitions and settling timeout must be positive; base seed must be non-negative" >&2
+  exit 2
+fi
+if [[ ! -r "${REFERENCE_CONFIG_PATH}" ]]; then
+  echo "Reference configuration is not readable: ${REFERENCE_CONFIG_PATH}" >&2
   exit 2
 fi
 
@@ -159,6 +164,7 @@ run_trial()
   sleep 1
   setsid ros2 launch my_robot_controller pid.launch.py \
     config_path:="${config_path}" \
+    reference_config_path:="${REFERENCE_CONFIG_PATH}" \
     csv_path:="${track_path}" \
     output_csv_path:="${output_csv}" \
     evaluation_output_csv_path:="${truth_csv}" > "${controller_log}" 2>&1 &
