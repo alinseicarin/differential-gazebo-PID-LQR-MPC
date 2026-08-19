@@ -6,6 +6,8 @@
 set -eo pipefail
 
 cd /home/ws
+# Rebuild and audit first so a diagnostic repeat cannot use stale binaries or a
+# controller/URDF mismatch.
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select \
   my_robot_description my_robot_controller
@@ -32,6 +34,8 @@ export ROS_DOMAIN_ID="${ANOMALY_RECHECK_ROS_DOMAIN_ID:-93}"
 export ROS_LOCALHOST_ONLY=1
 mkdir -p "${RESULT_ROOT}"
 
+# Preserve a plain-text declaration that these runs are post-hoc diagnostics
+# and enumerate the exact anomalous controller/seed/scenario combinations.
 {
   echo "SEVERE ANOMALY REPRODUCIBILITY CHECK"
   echo "role=diagnostic_post_hoc_not_for_inferential_pooling"
@@ -45,6 +49,8 @@ mkdir -p "${RESULT_ROOT}"
 
 run_group()
 {
+  # Execute one selected controller/seed bundle through the ordinary robustness
+  # suite, retaining the same severe reference and fixed observation duration.
   local repetition="$1"
   local family="$2"
   local seed="$3"
@@ -67,6 +73,8 @@ run_group()
 }
 
 for repetition in $(seq 1 "${REPETITIONS}"); do
+  # Repeat only the targeted anomalies; these results are never pooled with the
+  # predeclared ten-seed inferential campaign.
   run_group "${repetition}" pid 1504 19004 "nominal"
   run_group "${repetition}" mpc 1504 19004 "nominal"
   run_group "${repetition}" pid 1507 19007 "nominal angular_pulse_train"
@@ -74,5 +82,6 @@ for repetition in $(seq 1 "${REPETITIONS}"); do
   run_group "${repetition}" mpc 1507 19007 "nominal left_wheel_loss_persistent"
 done
 
+# Produce a dedicated reproducibility table clearly separate from formal data.
 python3 scripts/analyze_severe_anomaly_recheck.py "${RESULT_ROOT}"
 echo "Anomaly recheck complete: ${RESULT_ROOT}/recheck_summary.csv"

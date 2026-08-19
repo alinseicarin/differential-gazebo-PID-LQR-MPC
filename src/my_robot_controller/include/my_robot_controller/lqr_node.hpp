@@ -40,16 +40,20 @@ private:
     const my_robot_controller::TimeVaryingLqrOutput & lqr_output,
     const my_robot_controller::MotionCommand & motion_command);
 
+  // Output stream plus ROS-independent reference, feedback, and command blocks.
   std::ofstream trajectory_csv_;
   my_robot_controller::TrajectoryReferenceManager reference_manager_;
   my_robot_controller::TimeVaryingLqrController lqr_controller_;
   my_robot_controller::MotionCommandPolicy motion_command_policy_;
 
+  // ROS transport: command and experiment epoch publishers, EKF subscriber,
+  // and a wall-clock watchdog (not a periodic control timer).
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr experiment_start_publisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
 
+  // Latest planar EKF pose and simulation-time synchronization stamps [s].
   double current_x_{0.0};
   double current_y_{0.0};
   double current_theta_{0.0};
@@ -57,6 +61,7 @@ private:
   double first_stamp_seconds_{0.0};
   double command_connection_stamp_seconds_{0.0};
 
+  // Timing, terminal tolerances, and timeout values loaded from ROS parameters.
   double nominal_dt_{1.0 / 30.0};
   double max_control_dt_{0.2};
   double goal_tolerance_{0.08};
@@ -64,6 +69,8 @@ private:
   double odom_timeout_{2.0};
   double startup_settling_time_{1.0};
 
+  // Lifecycle flags enforce DDS readiness, startup settling, one final stop,
+  // and at most one warning after the finite LQR horizon.
   bool odom_received_{false};
   bool command_transport_connected_{false};
   bool command_path_ready_{false};

@@ -14,6 +14,7 @@
 
 namespace
 {
+// Convert the clean EKF quaternion to the planar yaw modified by this injector.
 double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 {
   const auto & q = message.pose.pose.orientation;
@@ -33,6 +34,8 @@ public:
   OdometryDisturbanceInjectorNode()
   : Node("odometry_disturbance_injector")
   {
+    // The injected pose corruption is deliberately configurable independently
+    // of the controller and never changes the clean evaluator subscription.
     declare_parameter<bool>("fault_enabled", false);
     declare_parameter<double>("fault_start_delay", 5.0);
     declare_parameter<double>("fault_duration", 5.0);
@@ -45,6 +48,7 @@ public:
     declare_parameter<std::string>(
       "output_csv_path", "odometry_disturbance_samples.csv");
 
+    // Populate and validate the ROS-independent stochastic fault policy.
     my_robot_controller::OdometryDisturbanceConfig config;
     config.enabled = get_parameter("fault_enabled").as_bool();
     config.start_delay = get_parameter("fault_start_delay").as_double();
@@ -63,6 +67,7 @@ public:
     config.random_seed = static_cast<unsigned int>(seed);
     disturbance_.configure(config);
 
+    // Record exact random samples and applied biases for reproducibility.
     const std::string output_path = get_parameter("output_csv_path").as_string();
     if (output_path.empty()) {
       throw std::runtime_error("Odometry-disturbance output path must not be empty");
@@ -76,6 +81,7 @@ public:
       "time,stamp,nominal_x,nominal_y,nominal_yaw,applied_x,applied_y,applied_yaw,"
       "x_perturbation,y_perturbation,yaw_perturbation,fault_active\n";
 
+    // This node is a transparent topic adapter outside its active fault window.
     disturbed_publisher_ = create_publisher<nav_msgs::msg::Odometry>(
       "odometry/filtered_disturbed", 10);
     clean_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -110,6 +116,8 @@ public:
 private:
   void experiment_start_callback(const std_msgs::msg::Float64::SharedPtr message)
   {
+    // Re-seed on the common epoch so a reused node produces the same configured
+    // realization on each synchronized run.
     if (!std::isfinite(message->data)) {
       RCLCPP_WARN(get_logger(), "Ignoring invalid experiment start time");
       return;
@@ -125,6 +133,8 @@ private:
 
   void odometry_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
+    // Copy the whole message first; position and orientation are the only fields
+    // replaced, preserving timestamps, frames, twist, and covariance metadata.
     const double stamp = rclcpp::Time(message->header.stamp).seconds();
     const double nominal_yaw = yaw_from_odometry(*message);
     if (!std::isfinite(stamp) || !std::isfinite(message->pose.pose.position.x) ||
@@ -170,9 +180,12 @@ private:
       previous_fault_active_ = output.fault_active;
     }
 
+    // Publish even before experiment start and when disabled, making the node
+    // an exact always-available transport link for the controller.
     disturbed_publisher_->publish(disturbed_message);
   }
 
+  // Pure disturbance generator, audit output, and ROS endpoints.
   my_robot_controller::OdometryDisturbance disturbance_;
   std::ofstream output_csv_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr disturbed_publisher_;
@@ -186,6 +199,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  // Report construction/callback exceptions as process failure to test scripts.
   rclcpp::init(argc, argv);
   int result = 0;
   try {

@@ -7,6 +7,9 @@
 namespace my_robot_controller
 {
 
+// Construction and later reconfiguration follow exactly the same path. This
+// keeps validation and state reset behavior identical whether the object is
+// created with explicit gains or receives them from a ROS parameter file.
 PIDController::PIDController(double kp, double ki, double kd, double max_i)
 {
   configure(kp, ki, kd, max_i);
@@ -14,6 +17,8 @@ PIDController::PIDController(double kp, double ki, double kd, double max_i)
 
 void PIDController::configure(double kp, double ki, double kd, double max_i)
 {
+  // NaN or infinity would contaminate every later command, so reject such
+  // values at the configuration boundary rather than inside the control loop.
   if (!std::isfinite(kp) || !std::isfinite(ki) || !std::isfinite(kd) ||
     !std::isfinite(max_i))
   {
@@ -49,11 +54,17 @@ double PIDController::calculate(double error, double dt)
 
   previous_error_ = error;
   has_previous_error_ = true;
+
+  // Parallel-form PID law:
+  // u = Kp*e + Ki*integral(e dt) + Kd*de/dt. The caller decides what physical
+  // quantity u represents; this reusable class does not apply actuator limits.
   return kp_ * error + ki_ * integral_ + kd_ * derivative;
 }
 
 void PIDController::reset()
 {
+  // Reset all dynamic memory between experiments. Keeping any of these values
+  // would make a new run depend on how the preceding run ended.
   integral_ = 0.0;
   previous_error_ = 0.0;
   has_previous_error_ = false;

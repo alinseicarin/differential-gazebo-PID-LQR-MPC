@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze_controller_comparison as analysis  # noqa: E402
 
 
+# Small synthetic samples have analytically checkable answers. Together these
+# tests protect quantiles, exact paired tests, effect sizes, Holm correction,
+# degradation matching, and predeclared inferential roles.
 class ComparisonStatisticsTest(unittest.TestCase):
 
     def test_quantile_uses_linear_interpolation(self):

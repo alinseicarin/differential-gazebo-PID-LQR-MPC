@@ -54,7 +54,7 @@ class CascadedPidController
 public:
   explicit CascadedPidController(const CascadedPidConfig & config = {});
 
-  /// Validate and apply all gains/limits, then clear both loop states.
+  /// Validate and apply all gains/limits, then clear all three PID states.
   void configure(const CascadedPidConfig & config);
 
   /// Calculate both velocity corrections from the common pose-error state.

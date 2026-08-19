@@ -14,6 +14,7 @@
 namespace
 {
 
+// Extract planar yaw from the EKF odometry quaternion.
 double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 {
   const auto & q = message.pose.pose.orientation;
@@ -27,6 +28,8 @@ double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 MpcNode::MpcNode()
 : Node("mpc_node")
 {
+  // Setup mirrors LQR/PID as closely as possible; only the feedback component
+  // and its solver parameters are MPC-specific.
   // -----------------------------------------------------------------------
   // Experiment files, horizon cost, and numerical solver
   // -----------------------------------------------------------------------
@@ -68,6 +71,8 @@ MpcNode::MpcNode()
   declare_parameter<double>("odom_timeout", 2.0);
   declare_parameter<double>("startup_settling_time", 1.0);
 
+  // Read basic dimensions/timing first because they determine every later
+  // configuration and the real-time budget of each QP.
   const auto search_window = get_parameter("search_window").as_int();
   const auto horizon_steps = get_parameter("mpc_prediction_horizon_steps").as_int();
   const double frequency = get_parameter("nominal_control_frequency").as_double();
@@ -95,6 +100,7 @@ MpcNode::MpcNode()
     throw std::runtime_error("MPC timing, tolerances, and timeout must be positive and finite");
   }
 
+  // MPC-specific horizon cost, physical input limits, and OSQP settings.
   my_robot_controller::LinearMpcConfig mpc_config;
   mpc_config.prediction_horizon_steps = static_cast<std::size_t>(horizon_steps);
   mpc_config.longitudinal_error_weight =
@@ -121,6 +127,7 @@ MpcNode::MpcNode()
   mpc_config.polish_solution = get_parameter("mpc_polish_solution").as_bool();
   mpc_controller_.configure(mpc_config);
 
+  // Shared post-controller limits and gross-error guard.
   my_robot_controller::MotionCommandPolicyConfig motion_config;
   motion_config.maximum_linear_velocity = maximum_linear_velocity;
   motion_config.maximum_angular_velocity = maximum_angular_velocity;
@@ -130,6 +137,7 @@ MpcNode::MpcNode()
     get_parameter("translation_stop_heading_error").as_double();
   motion_command_policy_.configure(motion_config);
 
+  // Shared geometry/time law; future samples are also used inside prediction.
   my_robot_controller::TrajectoryReferenceConfig reference_config;
   reference_config.path.search_window = static_cast<std::size_t>(search_window);
   reference_config.path.nominal_linear_velocity =
@@ -163,6 +171,7 @@ MpcNode::MpcNode()
   }
   reference_manager_.load_csv(path_file);
 
+  // Create a fresh machine-readable experiment log before ROS callbacks start.
   trajectory_csv_.open(output_file, std::ios::out | std::ios::trunc);
   if (!trajectory_csv_.is_open()) {
     throw std::runtime_error("Could not create MPC trajectory CSV: " + output_file);
@@ -188,6 +197,8 @@ MpcNode::MpcNode()
     static_cast<double>(mpc_controller_.config().prediction_horizon_steps) * nominal_dt_);
   RCLCPP_INFO(get_logger(), "Writing MPC experiment data to %s", output_file.c_str());
 
+  // The retained start-time message synchronizes any injector/evaluator that
+  // discovers its subscription after the MPC node is already ready.
   velocity_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
   experiment_start_publisher_ = create_publisher<std_msgs::msg::Float64>(
     "experiment_start_time", rclcpp::QoS(1).reliable().transient_local());
@@ -202,6 +213,7 @@ MpcNode::MpcNode()
 
 MpcNode::~MpcNode()
 {
+  // Ensure zero actuation and durable CSV output on normal or exceptional exit.
   stop();
   if (trajectory_csv_.is_open()) {
     trajectory_csv_.flush();
@@ -214,6 +226,9 @@ void MpcNode::build_prediction(
   std::vector<my_robot_controller::DiscreteErrorModel> & models,
   std::vector<my_robot_controller::MpcReferenceInput> & inputs) const
 {
+  // Rebuild the LTV sequence at every sample because the horizon moves forward
+  // in absolute trajectory time. Vectors are cleared but capacity is reserved
+  // to avoid repeated reallocations within this call.
   const std::size_t horizon = mpc_controller_.config().prediction_horizon_steps;
   models.clear();
   inputs.clear();
@@ -221,6 +236,8 @@ void MpcNode::build_prediction(
   inputs.reserve(horizon);
 
   for (std::size_t stage = 0u; stage < horizon; ++stage) {
+    // Input bounds use the stage-start feedforward command. Model matrices use
+    // midpoint coefficients, reducing frozen-model error within the interval.
     const double stage_time = elapsed_time + static_cast<double>(stage) * nominal_dt_;
     const double midpoint_time = stage_time + 0.5 * nominal_dt_;
     const auto input_reference = reference_manager_.sample_at_time(stage_time);
@@ -239,6 +256,7 @@ void MpcNode::build_prediction(
 
 void MpcNode::publish_stop()
 {
+  // Default-constructed Twist means v=0 and omega=0.
   if (!velocity_publisher_) {
     return;
   }
@@ -253,6 +271,8 @@ void MpcNode::stop()
 
 void MpcNode::watchdog_callback()
 {
+  // This wall-clock timer only detects stale EKF input; odometry messages
+  // themselves pace the 30 Hz optimization/control loop in simulation time.
   if (!odom_received_ || track_complete_ || stop_sent_) {
     return;
   }
@@ -266,6 +286,7 @@ void MpcNode::watchdog_callback()
 
 void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 {
+  // Cache one finite planar EKF state before performing lifecycle checks.
   current_x_ = message->pose.pose.position.x;
   current_y_ = message->pose.pose.position.y;
   current_theta_ = yaw_from_odometry(*message);
@@ -279,6 +300,8 @@ void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 
   const double stamp_seconds = rclcpp::Time(message->header.stamp).seconds();
   if (!command_transport_connected_) {
+    // Wait for DDS discovery so the reference clock cannot advance before the
+    // downstream command injector/plugin is actually able to receive Twist.
     last_odom_wall_time_ = std::chrono::steady_clock::now();
     if (velocity_publisher_->get_subscription_count() == 0u) {
       if (!waiting_for_command_path_logged_) {
@@ -298,6 +321,8 @@ void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   }
 
   if (!command_path_ready_) {
+    // Reproducible zero-command settling separates spawn/EKF startup from the
+    // recorded control experiment and clears any prior QP warm start.
     last_odom_wall_time_ = std::chrono::steady_clock::now();
     publish_stop();
     if (stamp_seconds - command_connection_stamp_seconds_ < startup_settling_time_) {
@@ -312,6 +337,7 @@ void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   }
 
   if (!odom_received_) {
+    // Publish the common simulation-time epoch exactly once per run.
     first_stamp_seconds_ = stamp_seconds;
     std_msgs::msg::Float64 start_message;
     start_message.data = first_stamp_seconds_;
@@ -323,6 +349,7 @@ void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
       return;
     }
     if (dt > max_control_dt_) {
+      // A stale primal solution is a poor initial guess after a long gap.
       mpc_controller_.reset_warm_start();
       RCLCPP_WARN(
         get_logger(), "Odometry gap %.3f s exceeded max_control_dt; reset MPC warm start", dt);
@@ -342,6 +369,8 @@ void MpcNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 
 void MpcNode::control_loop(double stamp_seconds)
 {
+  // Data path: timed reference and EKF pose -> current error plus future LTV
+  // sequence -> OSQP -> first correction -> common saturation -> Twist/log.
   const double elapsed_time = stamp_seconds - first_stamp_seconds_;
   const auto reference = reference_manager_.update(
     elapsed_time, current_x_, current_y_, current_theta_);
@@ -355,6 +384,8 @@ void MpcNode::control_loop(double stamp_seconds)
   build_prediction(elapsed_time, models, inputs);
   const auto mpc_output = mpc_controller_.calculate(error, models, inputs);
 
+  // Completion requires both the end of the prescribed time law and terminal
+  // pose tolerances, allowing recovery after a late disturbance.
   const bool experiment_complete =
     reference.trajectory_complete && reference.position_error <= goal_tolerance_ &&
     std::abs(reference.heading_error) <= goal_heading_tolerance_;
@@ -381,6 +412,7 @@ void MpcNode::control_loop(double stamp_seconds)
   }
 
   if (!mpc_output.solved) {
+    // A failed/unfinished QP must never leak a stale correction to the robot.
     publish_stop();
     my_robot_controller::MotionCommand stopped_command;
     log_sample(stamp_seconds, reference, mpc_output, stopped_command);
@@ -412,6 +444,8 @@ void MpcNode::log_sample(
   const my_robot_controller::LinearMpcOutput & mpc_output,
   const my_robot_controller::MotionCommand & motion_command)
 {
+  // Include solver diagnostics alongside the same state/reference/command
+  // fields used by PID and LQR, so timing failures are visible in analysis.
   trajectory_csv_ <<
     stamp_seconds - first_stamp_seconds_ << ',' <<
     current_x_ << ',' << current_y_ << ',' << current_theta_ << ',' <<
@@ -443,6 +477,7 @@ void MpcNode::log_sample(
 
 int main(int argc, char ** argv)
 {
+  // Standard ROS lifecycle with exception-to-exit-code conversion.
   rclcpp::init(argc, argv);
   int result = 0;
   try {

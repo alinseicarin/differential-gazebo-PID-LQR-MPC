@@ -18,11 +18,14 @@ RUN groupadd --gid $USER_GID $USERNAME \
 # launch file; pip supports any later Python analysis or tooling dependencies.
 RUN apt-get update && apt-get install -y \
     sudo \
+    python3-colcon-common-extensions \
     python3-pip \
     python3-pil \
+    python3-rosdep \
     python3-yaml \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-osqp-vendor \
+    ros-humble-robot-localization \
     && rm -rf /var/lib/apt/lists/*
 
 # Passwordless sudo is convenient for rosdep and package installation inside a

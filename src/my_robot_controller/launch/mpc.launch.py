@@ -10,6 +10,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     """Declare common experiment paths and construct the MPC control graph."""
+    # Package-relative substitutions keep the launch portable after install.
     package_share = FindPackageShare('my_robot_controller')
     csv_path = LaunchConfiguration('csv_path')
     output_csv_path = LaunchConfiguration('output_csv_path')
@@ -24,6 +25,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
+        # Declare experiment files, shared clock, and the one commissioning
+        # variable optionally overridden by the horizon study.
         DeclareLaunchArgument(
             'csv_path',
             default_value=PathJoinSubstitution([
@@ -61,6 +64,7 @@ def generate_launch_description():
             default_value='45',
             description='Number of discrete stages in the MPC horizon',
         ),
+        # Parameter list order matters: later inline values override YAML.
         Node(
             package='my_robot_controller',
             executable='mpc_node',
@@ -81,6 +85,7 @@ def generate_launch_description():
                 },
             ],
         ),
+        # Ground-truth evaluator is read-only with respect to the control loop.
         Node(
             package='my_robot_controller',
             executable='trajectory_evaluator_node',

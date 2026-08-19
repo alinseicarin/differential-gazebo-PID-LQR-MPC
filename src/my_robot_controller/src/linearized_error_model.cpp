@@ -8,6 +8,9 @@
 namespace my_robot_controller
 {
 
+// Build the frozen continuous-time model used at one point of the prescribed
+// trajectory. Calling this function at successive reference samples produces
+// the LTV model sequence consumed by LQR and MPC.
 ContinuousErrorModel LinearizedErrorModel::continuous(
   double reference_linear_velocity,
   double reference_angular_velocity)
@@ -37,6 +40,8 @@ ContinuousErrorModel LinearizedErrorModel::continuous(
   return model;
 }
 
+// Convert one frozen continuous model to the exact discrete equivalent under
+// a zero-order hold: the correction is assumed constant during one sample.
 DiscreteErrorModel LinearizedErrorModel::discretize_zero_order_hold(
   double reference_linear_velocity,
   double reference_angular_velocity,
@@ -58,6 +63,8 @@ DiscreteErrorModel LinearizedErrorModel::discretize_zero_order_hold(
   const Eigen::Matrix<double, 5, 5> transition = (augmented * sample_period).exp();
 
   DiscreteErrorModel discrete_model;
+  // Extract Ad and Bd from the augmented exponential and retain Ts alongside
+  // them so later code can audit that every prediction stage uses valid timing.
   discrete_model.state_matrix = transition.topLeftCorner<3, 3>();
   discrete_model.input_matrix = transition.topRightCorner<3, 2>();
   discrete_model.sample_period = sample_period;

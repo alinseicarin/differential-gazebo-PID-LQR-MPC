@@ -14,6 +14,7 @@ using my_robot_controller::PathReferenceConfig;
 using my_robot_controller::PathReferenceManager;
 using my_robot_controller::Point2D;
 
+// Construct a reusable x-axis path whose projection and tangent are known.
 PathReferenceManager make_straight_manager()
 {
   PathReferenceConfig config;
@@ -27,6 +28,8 @@ PathReferenceManager make_straight_manager()
   return manager;
 }
 
+// The following tests cover continuous projection, error signs, curvature,
+// closed-path branch selection, input validation, and endpoint slowdown.
 TEST(PathReferenceManagerTest, ProjectsOntoStraightSegment)
 {
   auto manager = make_straight_manager();

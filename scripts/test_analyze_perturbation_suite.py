@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze_perturbation_suite as analysis  # noqa: E402
 
 
+# These cases verify that a common observation horizon removes shell-polling
+# overshoot while retaining deliberate legacy and inferred-duration behavior.
 class PerturbationAnalysisTest(unittest.TestCase):
 
     def test_fixed_horizon_removes_polling_overshoot(self):

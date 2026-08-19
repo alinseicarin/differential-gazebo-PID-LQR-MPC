@@ -10,6 +10,7 @@
 namespace
 {
 
+// Generate a constant straight-reference model sequence for controlled tests.
 std::vector<my_robot_controller::DiscreteErrorModel> straight_models(
   std::size_t count = 150u)
 {
@@ -23,6 +24,8 @@ std::vector<my_robot_controller::DiscreteErrorModel> straight_models(
   return models;
 }
 
+// The suite verifies Riccati construction, equilibrium feedback, correction
+// signs, post-horizon behavior, and rejection of invalid data.
 TEST(TimeVaryingLqrController, BuildsFiniteGainForEveryModel)
 {
   my_robot_controller::TimeVaryingLqrController controller;

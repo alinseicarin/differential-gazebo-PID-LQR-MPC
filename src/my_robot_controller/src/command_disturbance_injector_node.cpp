@@ -16,6 +16,8 @@
 
 namespace
 {
+// Launch arguments cannot directly carry a numeric vector in the chosen CLI
+// interface, so repeated pulse starts use a strict "t1;t2;t3" representation.
 std::vector<double> parse_start_delays(const std::string & text)
 {
   std::vector<double> starts;
@@ -52,6 +54,8 @@ public:
   CommandDisturbanceInjectorNode()
   : Node("command_disturbance_injector")
   {
+    // Parameters describe the schedule, fault model, final safety bounds,
+    // watchdog, and audit log. They are controller-independent by design.
     declare_parameter<double>("fault_start_delay", 5.0);
     declare_parameter<std::string>("fault_start_delays", "");
     declare_parameter<double>("fault_duration", 0.5);
@@ -69,6 +73,7 @@ public:
     declare_parameter<std::string>(
       "output_csv_path", "command_disturbance_actual_commands.csv");
 
+    // Translate ROS parameter values into the tested pure-C++ fault objects.
     my_robot_controller::CommandDisturbanceConfig config;
     config.enabled = get_parameter("fault_enabled").as_bool();
     config.start_delay = get_parameter("fault_start_delay").as_double();
@@ -96,6 +101,8 @@ public:
       throw std::runtime_error("input_timeout must be finite and positive");
     }
 
+    // Log nominal, delayed, wheel-effective, and final applied commands so the
+    // analysis can verify that a requested fault actually occurred on time.
     const std::string output_path = get_parameter("output_csv_path").as_string();
     if (output_path.empty()) {
       throw std::runtime_error("Command-disturbance output_csv_path must not be empty");
@@ -149,6 +156,7 @@ public:
 
   ~CommandDisturbanceInjectorNode() override
   {
+    // Destruction is fail-safe: stop the robot before releasing the log file.
     publish_stop();
     if (command_csv_.is_open()) {
       command_csv_.close();
@@ -163,6 +171,8 @@ public:
 private:
   void experiment_start_callback(const std_msgs::msg::Float64::SharedPtr message)
   {
+    // The controller owns the epoch. Synchronizing here prevents DDS startup
+    // delay from shifting perturbations between controllers or repetitions.
     if (!std::isfinite(message->data)) {
       RCLCPP_WARN(get_logger(), "Ignoring invalid experiment start time");
       return;
@@ -179,6 +189,7 @@ private:
 
   void readiness_callback()
   {
+    // Instantiate the upstream subscription only after Gazebo is listening.
     if (nominal_command_subscriber_ ||
       applied_command_publisher_->get_subscription_count() == 0u)
     {
@@ -197,6 +208,8 @@ private:
 
   void command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
   {
+    // One nominal command produces one applied command and, during the measured
+    // run, one CSV row. Other Twist components pass through unchanged.
     const double stamp_seconds = now().seconds();
     if (!std::isfinite(stamp_seconds) || !std::isfinite(message->linear.x) ||
       !std::isfinite(message->angular.z))
@@ -246,6 +259,8 @@ private:
       return;
     }
 
+    // Replace only planar differential-drive channels after the pure fault
+    // policy has handled delay, wheel loss, additive bias, and clamping.
     geometry_msgs::msg::Twist applied_message = *message;
     applied_message.linear.x = output.applied_linear_velocity;
     applied_message.angular.z = output.applied_angular_velocity;
@@ -262,6 +277,7 @@ private:
       output.effective_left_wheel_velocity << ',' <<
       output.effective_right_wheel_velocity << ',' << output.active_window_index << '\n';
 
+    // Flush at transitions so crash/interruption cannot hide fault boundaries.
     if (output.fault_active != previous_fault_active_) {
       if (output.fault_active) {
         RCLCPP_WARN(
@@ -282,6 +298,8 @@ private:
 
   void watchdog_callback()
   {
+    // Host steady time still advances if simulation or controller messages
+    // stall, making it appropriate for a last-resort zero-command watchdog.
     if (!input_received_ || stop_sent_) {
       return;
     }
@@ -303,16 +321,19 @@ private:
     stop_sent_ = true;
   }
 
+  // Pure fault policies and their audit stream.
   my_robot_controller::CommandDisturbance disturbance_;
   my_robot_controller::CommandDelay command_delay_;
   std::ofstream command_csv_;
 
+  // ROS graph endpoints and readiness/watchdog timers.
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr applied_command_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr nominal_command_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr experiment_start_subscriber_;
   rclcpp::TimerBase::SharedPtr readiness_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
 
+  // Schedule/timestamp state and lifecycle flags.
   double input_timeout_{2.0};
   double experiment_start_stamp_seconds_{0.0};
   double previous_stamp_seconds_{0.0};
@@ -325,6 +346,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  // Keep configuration failures visible to campaign shell scripts via exit 1.
   rclcpp::init(argc, argv);
   int result = 0;
 

@@ -14,6 +14,8 @@
 namespace
 {
 
+// Odometry stores orientation as a quaternion. Under planar motion this
+// standard conversion extracts the chassis yaw used by the error model.
 double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 {
   const auto & q = message.pose.pose.orientation;
@@ -27,6 +29,9 @@ double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 LqrNode::LqrNode()
 : Node("lqr_node")
 {
+  // Construction performs all experiment setup once: declare/read parameters,
+  // configure pure control blocks, load the common reference, create the log,
+  // and finally connect ROS publishers/subscribers.
   // -----------------------------------------------------------------------
   // Experiment files and quadratic cost
   // -----------------------------------------------------------------------
@@ -62,6 +67,8 @@ LqrNode::LqrNode()
   declare_parameter<double>("odom_timeout", 2.0);
   declare_parameter<double>("startup_settling_time", 1.0);
 
+  // Convert external ROS parameters to validated C++ configuration objects.
+  // Failing early is safer than discovering an invalid limit during motion.
   const auto search_window = get_parameter("search_window").as_int();
   const double frequency = get_parameter("nominal_control_frequency").as_double();
   if (search_window < 1 || !std::isfinite(frequency) || frequency <= 0.0) {
@@ -85,6 +92,7 @@ LqrNode::LqrNode()
             "LQR timing, tolerances, and timeout must be positive and finite");
   }
 
+  // LQR-specific part: Q, R, and terminal scaling.
   my_robot_controller::TimeVaryingLqrConfig lqr_config;
   lqr_config.longitudinal_error_weight =
     get_parameter("lqr_longitudinal_error_weight").as_double();
@@ -100,6 +108,7 @@ LqrNode::LqrNode()
     get_parameter("lqr_terminal_weight_multiplier").as_double();
   lqr_controller_.configure(lqr_config);
 
+  // Controller-independent actuator/safety policy used after feedback.
   my_robot_controller::MotionCommandPolicyConfig motion_config;
   motion_config.maximum_linear_velocity = maximum_linear_velocity;
   motion_config.maximum_angular_velocity = maximum_angular_velocity;
@@ -109,6 +118,7 @@ LqrNode::LqrNode()
     get_parameter("translation_stop_heading_error").as_double();
   motion_command_policy_.configure(motion_config);
 
+  // Controller-independent geometric and temporal reference policy.
   my_robot_controller::TrajectoryReferenceConfig reference_config;
   reference_config.path.search_window = static_cast<std::size_t>(search_window);
   reference_config.path.nominal_linear_velocity =
@@ -143,6 +153,7 @@ LqrNode::LqrNode()
   reference_manager_.load_csv(path_file);
   build_gain_schedule();
 
+  // Truncate stale data and write a fixed schema before any callback can log.
   trajectory_csv_.open(output_file, std::ios::out | std::ios::trunc);
   if (!trajectory_csv_.is_open()) {
     throw std::runtime_error("Could not create LQR trajectory CSV: " + output_file);
@@ -167,6 +178,8 @@ LqrNode::LqrNode()
     reference_manager_.duration(), lqr_controller_.gain_count());
   RCLCPP_INFO(get_logger(), "Writing LQR experiment data to %s", output_file.c_str());
 
+  // Transient-local experiment time is retained for late-starting injectors
+  // and evaluators, giving the entire ROS graph one simulation-time epoch.
   velocity_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
   experiment_start_publisher_ = create_publisher<std_msgs::msg::Float64>(
     "experiment_start_time", rclcpp::QoS(1).reliable().transient_local());
@@ -181,6 +194,8 @@ LqrNode::LqrNode()
 
 LqrNode::~LqrNode()
 {
+  // RAII shutdown leaves the simulated actuator at zero and commits buffered
+  // CSV data even when the executor exits through an exception.
   stop();
   if (trajectory_csv_.is_open()) {
     trajectory_csv_.flush();
@@ -190,6 +205,8 @@ LqrNode::~LqrNode()
 
 void LqrNode::build_gain_schedule()
 {
+  // One gain is generated for every nominal controller interval covering the
+  // complete timed trajectory. Runtime therefore requires no Riccati solve.
   const std::size_t model_count = std::max<std::size_t>(
     1u, static_cast<std::size_t>(std::ceil(reference_manager_.duration() / nominal_dt_)));
   std::vector<my_robot_controller::DiscreteErrorModel> models;
@@ -213,6 +230,8 @@ void LqrNode::build_gain_schedule()
 
 std::size_t LqrNode::model_index_at(double elapsed_time) const
 {
+  // Floor maps absolute experiment time to the corresponding precomputed
+  // interval; calculate() safely clamps late indices to the final gain.
   if (!std::isfinite(elapsed_time) || elapsed_time <= 0.0) {
     return 0u;
   }
@@ -221,6 +240,7 @@ std::size_t LqrNode::model_index_at(double elapsed_time) const
 
 void LqrNode::publish_stop()
 {
+  // A default Twist is all zero. Remembering it avoids repeated watchdog work.
   if (!velocity_publisher_) {
     return;
   }
@@ -235,6 +255,8 @@ void LqrNode::stop()
 
 void LqrNode::watchdog_callback()
 {
+  // Simulation time may pause intentionally, so availability is monitored in
+  // host steady-clock time. The watchdog never generates normal control updates.
   if (!odom_received_ || track_complete_ || stop_sent_) {
     return;
   }
@@ -248,6 +270,8 @@ void LqrNode::watchdog_callback()
 
 void LqrNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 {
+  // Every fresh EKF sample is the trigger for exactly one possible control
+  // update; there is no independent timer that could reuse stale state.
   current_x_ = message->pose.pose.position.x;
   current_y_ = message->pose.pose.position.y;
   current_theta_ = yaw_from_odometry(*message);
@@ -261,6 +285,9 @@ void LqrNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 
   const double stamp_seconds = rclcpp::Time(message->header.stamp).seconds();
   if (!command_transport_connected_) {
+    // DDS discovery is asynchronous. Do not start the reference clock until a
+    // downstream command subscriber exists, otherwise the virtual robot could
+    // advance while Gazebo receives no commands.
     last_odom_wall_time_ = std::chrono::steady_clock::now();
     if (velocity_publisher_->get_subscription_count() == 0u) {
       if (!waiting_for_command_path_logged_) {
@@ -280,6 +307,8 @@ void LqrNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   }
 
   if (!command_path_ready_) {
+    // Hold zero for a reproducible settling interval after discovery. This
+    // removes spawn/estimator transients from measured controller performance.
     last_odom_wall_time_ = std::chrono::steady_clock::now();
     publish_stop();
     if (stamp_seconds - command_connection_stamp_seconds_ < startup_settling_time_) {
@@ -293,6 +322,8 @@ void LqrNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   }
 
   if (!odom_received_) {
+    // The first post-settling sample defines t=0 for controller, injector, and
+    // evaluator through the latched experiment_start_time topic.
     first_stamp_seconds_ = stamp_seconds;
     std_msgs::msg::Float64 start_message;
     start_message.data = first_stamp_seconds_;
@@ -325,6 +356,8 @@ void LqrNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr message)
 
 void LqrNode::control_loop(double stamp_seconds)
 {
+  // Data path: timestamp -> common timed reference -> common body-frame error
+  // -> scheduled LQR feedback -> common command policy -> Twist and CSV.
   const double elapsed_time = stamp_seconds - first_stamp_seconds_;
   const auto reference = reference_manager_.update(
     elapsed_time, current_x_, current_y_, current_theta_);
@@ -335,6 +368,8 @@ void LqrNode::control_loop(double stamp_seconds)
   const auto lqr_output = lqr_controller_.calculate(
     model_index_at(elapsed_time), error);
 
+  // Time alone is insufficient: after the reference ends, allow the robot to
+  // settle until both terminal position and heading tolerances are satisfied.
   const bool experiment_complete =
     reference.trajectory_complete && reference.position_error <= goal_tolerance_ &&
     std::abs(reference.heading_error) <= goal_heading_tolerance_;
@@ -381,6 +416,8 @@ void LqrNode::log_sample(
   const my_robot_controller::TimeVaryingLqrOutput & lqr_output,
   const my_robot_controller::MotionCommand & motion_command)
 {
+  // Store inputs, reference/projection states, feedback gains, final commands,
+  // and completion flags in one row for MATLAB/Python analysis and traceability.
   const auto & gain = lqr_output.gain;
   trajectory_csv_ <<
     stamp_seconds - first_stamp_seconds_ << ',' <<
@@ -413,6 +450,8 @@ void LqrNode::log_sample(
 
 int main(int argc, char ** argv)
 {
+  // Convert configuration/runtime exceptions into a nonzero process exit while
+  // still performing orderly ROS shutdown and a final stop command.
   rclcpp::init(argc, argv);
   int result = 0;
   try {

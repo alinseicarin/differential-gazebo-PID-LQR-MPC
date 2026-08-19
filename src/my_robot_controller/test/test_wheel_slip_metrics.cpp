@@ -11,6 +11,7 @@ namespace
 
 constexpr double kPi = 3.14159265358979323846;
 
+// Pure straight rolling defines the zero-discrepancy baseline.
 TEST(WheelSlipMetrics, PureRollingStraightHasZeroDiscrepancy)
 {
   const auto result = my_robot_controller::calculate_wheel_slip_metrics(
@@ -25,6 +26,7 @@ TEST(WheelSlipMetrics, PureRollingStraightHasZeroDiscrepancy)
   EXPECT_NEAR(result.sideslip_angle, 0.0, 1.0e-12);
 }
 
+// Turning wheels must be compared with local wheel-centre ground speeds.
 TEST(WheelSlipMetrics, PureRollingTurnUsesLocalWheelCentreSpeeds)
 {
   // Body travel is along world +y because yaw is pi/2. At v=0.4 m/s and
@@ -39,6 +41,7 @@ TEST(WheelSlipMetrics, PureRollingTurnUsesLocalWheelCentreSpeeds)
   EXPECT_NEAR(result.yaw_velocity_discrepancy_ratio, 0.0, 1.0e-12);
 }
 
+// Deliberate wheel/body mismatch should reveal traction and lateral slip.
 TEST(WheelSlipMetrics, ReportsTractionSlipAndLateralSideslip)
 {
   const auto result = my_robot_controller::calculate_wheel_slip_metrics(
@@ -51,6 +54,7 @@ TEST(WheelSlipMetrics, ReportsTractionSlipAndLateralSideslip)
   EXPECT_NEAR(result.sideslip_angle, std::atan2(0.1, 0.4), 1.0e-12);
 }
 
+// Invalid geometry or measurements must be rejected before normalization.
 TEST(WheelSlipMetrics, RejectsInvalidConfigurationAndInput)
 {
   EXPECT_THROW(

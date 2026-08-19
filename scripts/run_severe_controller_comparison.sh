@@ -12,6 +12,8 @@ cd /home/ws
 RESULT_DIR="${1:-/home/ws/results/controller_comparison_severe_$(date +%Y%m%d_%H%M%S)}"
 REFERENCE_CONFIG="/home/ws/install/my_robot_controller/share/my_robot_controller/config/trajectory_reference_severe.yaml"
 
+# Delegate to the common paired runner while freezing the severe reference,
+# selected scenarios, seed block, practical threshold, and observation horizon.
 COMPARISON_CONTROLLERS="pid lqr mpc" \
 COMPARISON_NOMINAL_TRACKS="" \
 COMPARISON_ROBUSTNESS_TRACK="figure_eight" \

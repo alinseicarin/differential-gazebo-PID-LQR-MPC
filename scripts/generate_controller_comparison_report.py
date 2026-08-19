@@ -45,11 +45,13 @@ FINITE_SCENARIOS = (
 )
 
 
+# Load a headered analysis CSV into dictionaries.
 def read_rows(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Safely parse one finite numeric field, returning NaN for missing data.
 def number(row, key):
     try:
         value = float(row[key])
@@ -58,10 +60,12 @@ def number(row, key):
     return value if math.isfinite(value) else math.nan
 
 
+# Format numbers compactly and represent invalid values consistently.
 def format_number(value):
     return '' if not math.isfinite(value) else f'{value:.9f}'
 
 
+# Digest one artifact for the report provenance manifest.
 def sha256_file(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -70,6 +74,7 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+# Hash an ordered bundle including relative names and file contents.
 def sha256_bundle(root, paths):
     """Hash relative names and bytes so input additions also change the digest."""
     digest = hashlib.sha256()
@@ -83,6 +88,7 @@ def sha256_bundle(root, paths):
     return digest.hexdigest()
 
 
+# Index descriptive rows by controller, track, and scenario.
 def group_index(rows):
     indexed = {}
     for row in rows:
@@ -93,6 +99,7 @@ def group_index(rows):
     return indexed
 
 
+# Return mean and confidence limits stored under one metric prefix.
 def metric_triplet(row, metric):
     return (
         number(row, f'{metric}_mean'),
@@ -101,6 +108,7 @@ def metric_triplet(row, metric):
     )
 
 
+# Choose a readable 1/2/5*10^n axis tick interval.
 def nice_step(span, target_ticks=6):
     if not math.isfinite(span) or span <= 0.0:
         return 1.0
@@ -118,6 +126,7 @@ def nice_step(span, target_ticks=6):
     return nice * power
 
 
+# Render a dependency-free SVG bar chart with intervals and labels.
 def svg_bar_chart(path, title, y_label, categories, values, force_zero=True):
     """Write a grouped mean-and-95%-CI bar chart as plain SVG."""
     category_width = 150
@@ -155,12 +164,14 @@ def svg_bar_chart(path, title, y_label, categories, values, force_zero=True):
     if axis_maximum <= axis_minimum:
         axis_maximum = axis_minimum + step
 
+    # Place one controller bar within its grouped categorical slot.
     def x_position(category_index, controller_index):
         group_center = left + (category_index + 0.5) * plot_width / len(categories)
         bar_width = min(30.0, 0.18 * plot_width / len(categories))
         separation = bar_width + 5.0
         return group_center + (controller_index - 1) * separation, bar_width
 
+    # Convert a bar value into SVG's downward-increasing y coordinate.
     def y_position(value):
         fraction = (value - axis_minimum) / (axis_maximum - axis_minimum)
         return top + plot_height * (1.0 - fraction)
@@ -254,6 +265,7 @@ def svg_bar_chart(path, title, y_label, categories, values, force_zero=True):
     path.write_text('\n'.join(svg) + '\n', encoding='utf-8')
 
 
+# Suppress meaningless plots when every selected value is missing.
 def grouped_chart_has_finite_value(values):
     """Return whether at least one controller/category mean can be plotted."""
     return any(
@@ -263,6 +275,7 @@ def grouped_chart_has_finite_value(values):
     )
 
 
+# Check whether paired observations exist for requested plot conditions.
 def paired_chart_has_finite_value(conditions, metric, raw_rows):
     """Return whether a requested paired-data figure has any observation."""
     requested = set(conditions)
@@ -273,6 +286,8 @@ def paired_chart_has_finite_value(conditions, metric, raw_rows):
     )
 
 
+# Draw seed-matched controller observations as connected dots so pairing and
+# between-seed variation remain visible.
 def svg_paired_dot_chart(
         path, title, y_label, category_labels, conditions, metric, raw_rows):
     """Show every paired seed with gray links across the three controllers."""
@@ -312,6 +327,7 @@ def svg_paired_dot_chart(
     axis_minimum = math.floor(axis_minimum / step) * step
     axis_maximum = math.ceil(axis_maximum / step) * step
 
+    # Convert a paired observation into SVG's downward-increasing y coordinate.
     def y_position(value):
         fraction = (value - axis_minimum) / (axis_maximum - axis_minimum)
         return top + plot_height * (1.0 - fraction)
@@ -398,6 +414,7 @@ def svg_paired_dot_chart(
     path.write_text('\n'.join(svg) + '\n', encoding='utf-8')
 
 
+# Gather ordered mean/confidence triplets for plotting.
 def chart_values(indexed, conditions, metric):
     values = {controller: [] for controller in CONTROLLERS}
     for track, scenario in conditions:
@@ -410,6 +427,7 @@ def chart_values(indexed, conditions, metric):
     return values
 
 
+# Convert wide descriptive results into a long/tidy metric table.
 def write_tidy_descriptive(root, grouped_rows):
     selected = {
         'cte_rmse_m', 'heading_rmse_rad', 'temporal_position_rmse_m',
@@ -446,12 +464,14 @@ def write_tidy_descriptive(root, grouped_rows):
                 })
 
 
+# Produce a concise label for one track/scenario combination.
 def condition_label(track, scenario):
     if scenario == 'nominal':
         return f'{TRACK_LABELS.get(track, track)} - nominal'
     return SCENARIO_LABELS.get(scenario, scenario)
 
 
+# Assemble tables, figures, inference, caveats, and audit into the generated report.
 def write_markdown_report(
         root, figure_names, raw_rows, grouped_rows, confirmatory_rows,
         family_rows, completion_rows):
@@ -622,6 +642,7 @@ def write_markdown_report(
     )
 
 
+# Record hashes of analysis inputs/outputs for complete traceability.
 def write_analysis_manifest(root):
     protocol = {}
     for line in (root / 'protocol.txt').read_text(encoding='utf-8').splitlines():
@@ -664,6 +685,7 @@ def write_analysis_manifest(root):
     )
 
 
+# Validate inputs and generate SVG, tidy CSV, Markdown, and manifest artifacts.
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(
@@ -807,4 +829,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Keep rendering helpers importable by unit tests.
     main()

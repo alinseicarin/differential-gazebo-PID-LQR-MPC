@@ -15,6 +15,8 @@ set -u
 export ROS2CLI_DISABLE_DAEMON=1
 
 RESULT_DIR="${1:?usage: run_pid_perturbation_case.sh RESULT_DIR}"
+# The suite exports one fully specified scenario through these variables. This
+# runner translates it into a controller-specific launch plus common injectors.
 SCENARIO_NAME="${PERTURBATION_SCENARIO:-nominal}"
 FAULT_DOMAIN="${PERTURBATION_DOMAIN:-none}"
 CONTROLLER_FAMILY="${PERTURBATION_CONTROLLER_FAMILY:-pid}"
@@ -25,6 +27,7 @@ FIXED_OBSERVATION_DURATION="${PERTURBATION_FIXED_OBSERVATION_DURATION:-0.0}"
 MPC_HORIZON_STEPS="${MPC_PREDICTION_HORIZON_STEPS:-}"
 CONTROLLER_EXTRA_ARGS=()
 
+# Select only executable/config details here; fault values remain identical.
 case "${CONTROLLER_FAMILY}" in
   pid)
     DEFAULT_CONFIG_PATH="/home/ws/install/my_robot_controller/share/my_robot_controller/config/pid_cascade.yaml"
@@ -53,6 +56,8 @@ REFERENCE_CONFIG_PATH="${PERTURBATION_REFERENCE_CONFIG_PATH:-/home/ws/install/my
 TRACK_SOURCE="${PERTURBATION_TRACK_PATH:-/home/ws/install/my_robot_controller/share/my_robot_controller/tracks/track_5_figure_eight.csv}"
 TRACK_PATH="${RESULT_DIR}/track_under_test.csv"
 
+# Command-domain and feedback-domain controls are kept separate so a scenario
+# cannot accidentally corrupt both actuator input and observed localization.
 COMMAND_FAULT_ENABLED="${COMMAND_FAULT_ENABLED:-false}"
 FEEDBACK_FAULT_ENABLED="${FEEDBACK_FAULT_ENABLED:-false}"
 FAULT_START_DELAY="${FAULT_START_DELAY:-5.0}"
@@ -88,6 +93,7 @@ CONTROL_LOG="${RESULT_DIR}/control_graph.log"
 METADATA_CSV="${RESULT_DIR}/scenario_metadata.csv"
 
 mkdir -p "${RESULT_DIR}"
+# Fail before starting Gazebo if any immutable experiment input is unavailable.
 if [[ ! -f "${TRACK_SOURCE}" ]]; then
   echo "Track does not exist: ${TRACK_SOURCE}"
   exit 2
@@ -110,6 +116,8 @@ ACTIVE_CONTROL_PID=""
 
 stop_process_group()
 {
+  # `setsid` creates one group per launch graph. Signal the group so child nodes
+  # do not survive and contaminate the following fresh trial.
   local process_id="$1"
   if [[ -z "${process_id}" ]]; then
     return
@@ -123,6 +131,7 @@ stop_process_group()
 
 cleanup()
 {
+  # Trap-based cleanup runs on success, error, or interruption.
   stop_process_group "${ACTIVE_CONTROL_PID}"
   ACTIVE_CONTROL_PID=""
   stop_process_group "${ACTIVE_SIMULATION_PID}"
@@ -139,6 +148,7 @@ setsid ros2 launch my_robot_description display.launch.py \
 ACTIVE_SIMULATION_PID=$!
 
 simulation_ready=0
+# Poll for the Gazebo truth topic as a readiness condition, with a hard timeout.
 for second in $(seq 1 45); do
   if grep -q 'Successfully spawned entity' "${SIM_LOG}" 2>/dev/null; then
     simulation_ready=1
@@ -188,6 +198,8 @@ ACTIVE_CONTROL_PID=$!
 complete=0
 graph_failed=0
 observation_horizon_reached=0
+# Observe output files/process state until completion or the fixed analysis
+# horizon. Polling controls orchestration only; controller timing uses /clock.
 for second in $(seq 1 "${TIMEOUT_SECONDS}"); do
   if grep -q 'Trajectory complete' "${CONTROL_LOG}" 2>/dev/null; then
     complete=1
@@ -242,6 +254,8 @@ then
   echo "[${SCENARIO_NAME}] fixed observation horizon was not reached"
   exit 1
 fi
+# A successful process exit is insufficient: every required evidence stream
+# must contain data before the case is accepted.
 if [[ ! -s "${CONTROLLER_CSV}" || ! -s "${COMMAND_CSV}" ||
   ! -s "${ODOMETRY_CSV}" || ! -s "${GROUND_TRUTH_CSV}" ]]
 then
@@ -255,6 +269,7 @@ fi
   echo "${SCENARIO_NAME},${FAULT_DOMAIN},${FAULT_START_DELAY},${FAULT_DURATION},${complete},${COMMAND_FAULT_ENABLED},${FEEDBACK_FAULT_ENABLED},${ANGULAR_VELOCITY_BIAS},${LEFT_WHEEL_EFFECTIVENESS},${RIGHT_WHEEL_EFFECTIVENESS},${COMMAND_DELAY},${POSITION_NOISE_STDDEV},${YAW_NOISE_STDDEV},${NOISE_SEED},${GAZEBO_SEED},${CONTROLLER_FAMILY},${MPC_HORIZON_STEPS},${CONFIG_SHA256},${REFERENCE_CONFIG_SHA256},${TRACK_SHA256},${FAULT_START_DELAYS},${FAULT_PERSISTENT},${ODOMETRY_X_BIAS},${ODOMETRY_Y_BIAS},${ODOMETRY_YAW_BIAS},${FIXED_OBSERVATION_DURATION},${observation_horizon_reached}"
 } > "${METADATA_CSV}"
 
+# Exit zero only for a completed, fully logged case; the suite records failures.
 if [[ "${complete}" -eq 1 ]]; then
   echo "[${SCENARIO_NAME}] complete"
 elif [[ "${observation_horizon_reached}" -eq 1 ]]; then

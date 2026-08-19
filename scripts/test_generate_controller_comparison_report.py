@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import generate_controller_comparison_report as report  # noqa: E402
 
 
+# Synthetic inputs protect axis selection, SVG validity, optional-data handling,
+# and confirmatory-versus-post-hoc wording without a full Gazebo campaign.
 class ComparisonReportTest(unittest.TestCase):
 
     def test_nice_step_uses_readable_one_two_five_sequence(self):

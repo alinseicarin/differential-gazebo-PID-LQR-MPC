@@ -9,17 +9,22 @@ namespace my_robot_controller
 /// Reproducible corruption applied to the planar pose seen by a controller.
 struct OdometryDisturbanceConfig
 {
+  /// Master switch leaves the injector in the graph as an exact pass-through.
   bool enabled{false};
+  /// Fault window relative to the common experiment start [s].
   double start_delay{5.0};
   double duration{5.0};
+  /// Constant world-frame position biases [m] and yaw bias [rad].
   double x_bias{0.0};
   double y_bias{0.0};
   double yaw_bias{0.0};
+  /// Standard deviations of independent zero-mean Gaussian samples.
   double position_noise_standard_deviation{0.0};
   double yaw_noise_standard_deviation{0.0};
   unsigned int random_seed{2026u};
 };
 
+/// Both clean and corrupted values from one update, retained for audit logs.
 struct OdometryDisturbanceOutput
 {
   double nominal_x{0.0};
@@ -40,7 +45,9 @@ class OdometryDisturbance
 public:
   explicit OdometryDisturbance(const OdometryDisturbanceConfig & config = {});
 
+  /// Validate the schedule and restart the deterministic random sequence.
   void configure(const OdometryDisturbanceConfig & config);
+  /// Return the pseudo-random generator to the configured seed.
   void reset();
 
   OdometryDisturbanceOutput apply(
@@ -56,6 +63,8 @@ private:
   void validate_config(const OdometryDisturbanceConfig & config) const;
 
   OdometryDisturbanceConfig config_;
+  // Mersenne Twister plus a unit normal distribution generate reproducible
+  // samples later scaled independently for position and yaw.
   std::mt19937 random_engine_;
   std::normal_distribution<double> standard_normal_{0.0, 1.0};
 };

@@ -9,11 +9,13 @@ from collections import defaultdict
 from pathlib import Path
 
 
+# Read a CSV log into header-keyed dictionaries.
 def read_rows(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Parse one numeric cell safely, using NaN to preserve an auditable missing value.
 def number(row, key):
     try:
         value = float(row[key])
@@ -22,6 +24,7 @@ def number(row, key):
     return value if math.isfinite(value) else math.nan
 
 
+# Compare targeted anomaly reruns and produce a concise diagnostic summary.
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(
@@ -109,4 +112,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Standard command-line entry point guard.
     main()

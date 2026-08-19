@@ -6,6 +6,9 @@
 
 namespace
 {
+// Boundary cases use explicit times because a one-sample scheduling error would
+// undermine fairness. Later tests isolate repeated/persistent windows, wheel
+// loss, safety clamping, invalid configurations, and command-delay history.
 TEST(CommandDisturbance, PassesNominalCommandBeforeFault)
 {
   my_robot_controller::CommandDisturbance disturbance;

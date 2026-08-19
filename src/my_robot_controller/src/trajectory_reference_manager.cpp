@@ -66,6 +66,9 @@ void TrajectoryReferenceManager::reset_projection()
 
 void TrajectoryReferenceManager::build_time_profile()
 {
+  // Stage 1: resample the geometric path on an approximately uniform arc-length
+  // grid. The original CSV remains untouched; these internal knots make speed
+  // constraints independent of the original waypoint density.
   const double length = path_manager_.total_length();
   if (!std::isfinite(length) || length <= 0.0) {
     throw std::logic_error("Cannot time-parameterize an empty or zero-length path");
@@ -81,6 +84,8 @@ void TrajectoryReferenceManager::build_time_profile()
     knot.progress = index == interval_count ?
       length : static_cast<double>(index) * interval_length;
 
+    // Start from the curvature-aware geometric limit, then enforce
+    // |omega_ref|=|kappa*v_ref| <= maximum_reference_angular_velocity.
     const PathGeometrySample geometry = path_manager_.sample_at_progress(knot.progress);
     double speed_limit = geometry.reference_linear_velocity;
     if (std::abs(geometry.curvature) > kMinimumPositiveVelocity) {
@@ -96,6 +101,8 @@ void TrajectoryReferenceManager::build_time_profile()
   time_knots_.front().linear_velocity = 0.0;
   time_knots_.back().linear_velocity = 0.0;
 
+  // Stage 2a, forward pass: a knot cannot be faster than a robot accelerating
+  // from the already feasible speed of the preceding knot.
   for (std::size_t index = 1; index < time_knots_.size(); ++index) {
     const double ds = time_knots_[index].progress - time_knots_[index - 1].progress;
     const double reachable_speed = std::sqrt(
@@ -106,6 +113,8 @@ void TrajectoryReferenceManager::build_time_profile()
       time_knots_[index].linear_velocity, reachable_speed);
   }
 
+  // Stage 2b, backward pass: a knot cannot be faster than a robot that must
+  // still brake to the feasible speed at the following knot (and finally zero).
   for (std::size_t index = time_knots_.size() - 1; index > 0; --index) {
     const double ds = time_knots_[index].progress - time_knots_[index - 1].progress;
     const double braking_speed = std::sqrt(
@@ -115,6 +124,8 @@ void TrajectoryReferenceManager::build_time_profile()
       time_knots_[index - 1].linear_velocity, braking_speed);
   }
 
+  // Stage 3: integrate travel time along the now-feasible spatial speed
+  // profile. The resulting monotonically increasing times form the time law.
   double accumulated_time = 0.0;
   time_knots_.front().time = 0.0;
   for (std::size_t index = 1; index < time_knots_.size(); ++index) {
@@ -150,6 +161,9 @@ PathGeometrySample TrajectoryReferenceManager::sample_at_time(double elapsed_tim
     return result;
   }
 
+  // Binary search selects the two time knots bracketing the query. The
+  // interval is then reconstructed under the same constant-acceleration
+  // assumption used to obtain its duration.
   const auto upper = std::upper_bound(
     time_knots_.begin(), time_knots_.end(), time,
     [](double value, const TimeKnot & knot) {return value < knot.time;});
@@ -188,6 +202,9 @@ TrajectoryReference TrajectoryReferenceManager::update(
   TrajectoryReference reference;
   reference.reference_time = std::clamp(elapsed_time, 0.0, duration_);
   reference.trajectory_complete = elapsed_time >= duration_;
+  // These are deliberately different references: trajectory is the prescribed
+  // time-indexed virtual robot used for control, while projection is the
+  // closest causal path point used for geometric evaluation and completion.
   reference.trajectory = sample_at_time(elapsed_time);
   reference.projection = path_manager_.update(robot_x, robot_y, robot_heading);
 

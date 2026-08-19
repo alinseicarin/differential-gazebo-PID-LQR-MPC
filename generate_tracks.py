@@ -18,17 +18,20 @@ SMOOTH_TRACK_SPACING = 0.01
 COORDINATE_DECIMALS = 5
 
 
+# Round exactly as the CSV writer will, normalizing negative zero for clean diffs.
 def quantize_waypoint(waypoint):
     """Apply exactly the coordinate quantization written to each CSV file."""
     rounded = [round(coordinate, COORDINATE_DECIMALS) for coordinate in waypoint]
     return tuple(0.0 if coordinate == 0.0 else coordinate for coordinate in rounded)
 
 
+# Normalize angular differences so tangent changes use the shortest rotation.
 def wrap_angle(angle):
     """Return the shortest signed representation of an angle in radians."""
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+# Verify that quantization has not introduced duplicates or abrupt tangent jumps.
 def validate_smooth_track(name, waypoints):
     """Reject a nominally smooth benchmark with artificial tangent steps."""
     quantized = [quantize_waypoint(waypoint) for waypoint in waypoints]
@@ -53,6 +56,7 @@ def validate_smooth_track(name, waypoints):
         )
 
 
+# Serialize an ordered waypoint list in the strict format expected by C++.
 def save_to_csv(filename, waypoints):
     """Write an ordered waypoint sequence as two numeric CSV columns."""
     with open(filename, mode='w', newline='') as file:

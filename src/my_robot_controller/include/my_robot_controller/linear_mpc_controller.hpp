@@ -13,8 +13,10 @@ namespace my_robot_controller
 /// Finite-horizon quadratic weights, command bounds, and OSQP tolerances.
 struct LinearMpcConfig
 {
+  /// Number of future 30 Hz intervals optimized at every callback.
   std::size_t prediction_horizon_steps{45u};
 
+  // Diagonal Q state weights, diagonal R correction weights, and Q_N scale.
   double longitudinal_error_weight{100.0};
   double lateral_error_weight{400.0};
   double heading_error_weight{100.0};
@@ -22,10 +24,12 @@ struct LinearMpcConfig
   double angular_correction_weight{15.625};
   double terminal_weight_multiplier{10.0};
 
+  // Physical absolute-command bounds; optimized variables are corrections.
   double minimum_linear_velocity{0.0};
   double maximum_linear_velocity{1.0};
   double maximum_absolute_angular_velocity{1.5};
 
+  // Numerical termination settings passed directly to OSQP.
   int maximum_solver_iterations{4000};
   double absolute_solver_tolerance{1.0e-5};
   double relative_solver_tolerance{1.0e-5};
@@ -43,7 +47,9 @@ struct MpcReferenceInput
 /// First receding-horizon action plus diagnostics retained for experiment logs.
 struct LinearMpcOutput
 {
+  // Only the first optimized action is applied by receding-horizon control.
   VelocityCorrection correction{VelocityCorrection::Zero()};
+  // Remaining fields expose solver health and computation time for auditing.
   bool solved{false};
   int solver_status{0};
   int iterations{0};
@@ -68,11 +74,13 @@ public:
   void configure(const LinearMpcConfig & config);
   const LinearMpcConfig & config() const;
 
+  /// Build and solve one horizon QP from current error and future LTV stages.
   LinearMpcOutput calculate(
     const ErrorState & initial_error,
     const std::vector<DiscreteErrorModel> & models,
     const std::vector<MpcReferenceInput> & reference_inputs);
 
+  /// Forget the preceding QP solution after reset or configuration change.
   void reset_warm_start();
 
 private:

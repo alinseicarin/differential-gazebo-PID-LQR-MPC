@@ -38,19 +38,25 @@ COMMON_REFERENCE_PARAMETERS = (
 )
 
 
+# Collect every check and issue so one preflight run reports the whole project
+# state rather than stopping at the first mismatch.
 class Audit:
+    # Start with no completed checks and no issues.
     def __init__(self):
         self.checks = 0
         self.issues = []
 
+    # Record one boolean invariant and append its message on failure.
     def require(self, condition, message):
         self.checks += 1
         if not condition:
             self.issues.append(message)
 
+    # Convenience wrapper for exact equality.
     def equal(self, actual, expected, message):
         self.require(actual == expected, f'{message}: {actual!r} != {expected!r}')
 
+    # Convenience wrapper for floating-point equality within tolerance.
     def close(self, actual, expected, message, tolerance=1.0e-9):
         self.require(
             math.isclose(actual, expected, rel_tol=tolerance, abs_tol=tolerance),
@@ -58,11 +64,13 @@ class Audit:
         )
 
 
+# Load the ROS parameter dictionary for a named YAML node.
 def yaml_parameters(path, node_name):
     document = yaml.safe_load(path.read_text(encoding='utf-8'))
     return document[node_name]['ros__parameters']
 
 
+# Parse C++ declare_parameter defaults for source/YAML parity checks.
 def declared_defaults(path):
     source = path.read_text(encoding='utf-8')
     pattern = re.compile(
@@ -84,10 +92,12 @@ def declared_defaults(path):
     return values
 
 
+# Convert an XML xyz attribute into a numeric three-vector.
 def xyz(element):
     return tuple(float(value) for value in element.attrib['xyz'].split())
 
 
+# Check common controller/reference parameters, limits, defaults, and dimensions.
 def audit_configuration(audit):
     configs = {
         family: yaml_parameters(path, node)
@@ -139,6 +149,7 @@ def audit_configuration(audit):
     return configs, reference
 
 
+# Cross-check URDF geometry/inertia/plugins/sensors/EKF against software assumptions.
 def audit_robot_model(audit, configs, reference):
     robot = ET.parse(DESCRIPTION_ROOT / 'urdf' / 'my_robot.urdf').getroot()
     joints = {joint.attrib['name']: joint for joint in robot.findall('joint')}
@@ -212,6 +223,15 @@ def audit_robot_model(audit, configs, reference):
     caster_radius = float(caster_collision.attrib['radius'])
     audit.equal(caster_visual.attrib['radius'], caster_collision.attrib['radius'],
                 'caster visual/collision radius')
+    audit.equal(joints['caster_wheel_joint'].attrib.get('type'), 'fixed',
+                'caster support joint type')
+    caster_surface = robot.find("gazebo[@reference='caster_wheel']")
+    audit.require(caster_surface is not None, 'caster Gazebo surface is missing')
+    if caster_surface is not None:
+        audit.close(float(caster_surface.findtext('mu1')), 0.0,
+                    'caster longitudinal friction')
+        audit.close(float(caster_surface.findtext('mu2')), 0.0,
+                    'caster lateral friction')
 
     # Check the declared ideal solid-body inertias against their dimensions.
     chassis_dimensions = tuple(float(value) for value in chassis_box.split())
@@ -281,6 +301,10 @@ def audit_robot_model(audit, configs, reference):
             physics.findtext('ode/solver/type'),
             physics.findtext('ode/solver/iters'),
             physics.findtext('ode/solver/sor'),
+            physics.findtext('ode/constraints/cfm'),
+            physics.findtext('ode/constraints/erp'),
+            physics.findtext('ode/constraints/contact_max_correcting_vel'),
+            physics.findtext('ode/constraints/contact_surface_layer'),
         )
         physics_signatures.append((world_path.name, signature))
     audit.require(
@@ -290,6 +314,7 @@ def audit_robot_model(audit, configs, reference):
     return separation
 
 
+# Validate track columns, finite values, spacing, continuity, and expected coverage.
 def audit_tracks(audit):
     generator_path = ROOT / 'generate_tracks.py'
     spec = importlib.util.spec_from_file_location('benchmark_tracks', generator_path)
@@ -323,6 +348,7 @@ def audit_tracks(audit):
             audit.require(True, '')
 
 
+# Extract relevant nodes, remappings, and parameters from one launch source.
 def launch_shape(path):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     arguments = set()
@@ -348,6 +374,7 @@ def launch_shape(path):
     return arguments, nodes
 
 
+# Verify that all controllers traverse equivalent perturbation graphs and bounds.
 def audit_launch_parity(audit, configs, wheel_separation):
     shapes = {
         family: launch_shape(
@@ -499,6 +526,7 @@ def audit_launch_parity(audit, configs, wheel_separation):
     )
 
 
+# Execute every preflight category and expose failure through the process code.
 def main():
     audit = Audit()
     try:
@@ -521,4 +549,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # sys.exit propagates the audit result to campaign shell scripts.
     sys.exit(main())

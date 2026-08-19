@@ -10,6 +10,9 @@
 namespace my_robot_controller
 {
 
+// The LQR class is ROS-independent: it accepts a sequence of discrete models
+// and returns velocity corrections. This separates control theory from message
+// transport and permits deterministic unit tests of the Riccati recursion.
 TimeVaryingLqrController::TimeVaryingLqrController(
   const TimeVaryingLqrConfig & config)
 {
@@ -36,6 +39,9 @@ void TimeVaryingLqrController::validate_config(
 
 void TimeVaryingLqrController::update_weight_matrices()
 {
+  // Q penalizes the three body-frame errors. R penalizes the two corrections
+  // delta_v and delta_omega. Diagonal matrices mean no explicit cross-products
+  // between different errors or commands are included in the cost.
   state_weight_ = StateMatrix::Zero();
   state_weight_.diagonal() <<
     config_.longitudinal_error_weight,
@@ -54,6 +60,7 @@ void TimeVaryingLqrController::configure(const TimeVaryingLqrConfig & config)
   validate_config(config);
   config_ = config;
   update_weight_matrices();
+  // Existing gains belong to the old weights and must never be reused.
   gains_.clear();
   costs_to_go_.clear();
 }
@@ -69,6 +76,8 @@ void TimeVaryingLqrController::build_gain_schedule(
   costs_to_go_.assign(models.size() + 1u, StateMatrix::Zero());
   costs_to_go_.back() = terminal_state_weight_;
 
+  // Finite-horizon dynamic programming proceeds backwards from the terminal
+  // cost. The gain at index k is nevertheless stored in chronological order.
   for (std::size_t reverse = models.size(); reverse > 0u; --reverse) {
     const std::size_t index = reverse - 1u;
     const StateMatrix & a = models[index].state_matrix;
@@ -80,6 +89,8 @@ void TimeVaryingLqrController::build_gain_schedule(
       throw std::invalid_argument("TVLQR model sequence contains a non-finite value");
     }
 
+    // H = R + B'P_(k+1)B is positive definite when R is positive definite.
+    // LDLT solves H*K = B'P_(k+1)A without forming an explicit inverse.
     const Eigen::Matrix2d control_hessian = input_weight_ + b.transpose() * next_cost * b;
     const Eigen::LDLT<Eigen::Matrix2d> decomposition(control_hessian);
     if (decomposition.info() != Eigen::Success || !decomposition.isPositive()) {
@@ -92,6 +103,7 @@ void TimeVaryingLqrController::build_gain_schedule(
     }
     gains_[index] = gain;
 
+    // Discrete Riccati recursion computes the optimal cost-to-go P_k.
     StateMatrix current_cost =
       state_weight_ + a.transpose() * next_cost * a -
       a.transpose() * next_cost * b * gain;
@@ -117,8 +129,12 @@ TimeVaryingLqrOutput TimeVaryingLqrController::calculate(
   }
 
   TimeVaryingLqrOutput output;
+  // When execution exceeds the precomputed horizon, hold the final gain rather
+  // than indexing beyond the schedule. Normal trials aim to finish beforehand.
   output.gain_index = std::min(model_index, gains_.size() - 1u);
   output.gain = gains_[output.gain_index];
+  // Standard optimal state feedback. With e = reference - robot, the sign is
+  // fixed by the B matrix used in the shared error model.
   output.correction = -output.gain * error;
   output.instantaneous_state_cost = (error.transpose() * state_weight_ * error).value();
   return output;

@@ -82,6 +82,8 @@ HEADING_PRACTICAL_METRICS = {
 }
 
 
+# Expand the two engineering tolerances into metric-specific thresholds while
+# preserving whether a metric is measured in metres or radians.
 def practical_threshold_map(position_threshold_m, heading_threshold_rad):
     """Apply one predeclared band consistently within each physical unit."""
     return {
@@ -128,11 +130,13 @@ T_975 = (
 )
 
 
+# Load one headered CSV as dictionaries.
 def read_rows(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Read and validate the frozen text protocol from the result root.
 def read_protocol(root):
     values = {}
     path = root / 'protocol.txt'
@@ -154,6 +158,7 @@ def read_protocol(root):
     return values
 
 
+# Hash a file to detect any configuration/reference changes between runs.
 def sha256(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -162,6 +167,7 @@ def sha256(path):
     return digest.hexdigest()
 
 
+# Extract the simple scalar subset needed for cross-controller parity checks.
 def read_yaml_scalars(path, selected_keys=None):
     """Read the simple scalar key/value lines used by controller YAML files."""
     if selected_keys is None:
@@ -180,6 +186,7 @@ def read_yaml_scalars(path, selected_keys=None):
     return values
 
 
+# Parse a named field as a finite float, otherwise retain an explicit NaN.
 def finite(row, key):
     try:
         value = float(row[key])
@@ -188,6 +195,7 @@ def finite(row, key):
     return value if math.isfinite(value) else math.nan
 
 
+# Serialize mixed numeric/text fields deterministically for output CSV files.
 def format_value(value):
     if isinstance(value, str):
         return value
@@ -196,6 +204,7 @@ def format_value(value):
     return '' if not math.isfinite(value) else f'{value:.9f}'
 
 
+# Compute an interpolated empirical quantile after discarding missing values.
 def quantile(values, probability):
     """Return a linearly interpolated sample quantile (Hyndman--Fan type 7)."""
     ordered = sorted(value for value in values if math.isfinite(value))
@@ -212,6 +221,7 @@ def quantile(values, probability):
     return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
 
 
+# Calculate mean, standard deviation, and two-sided 95% Student-t interval.
 def confidence_interval(values):
     values = [value for value in values if math.isfinite(value)]
     if not values:
@@ -226,6 +236,8 @@ def confidence_interval(values):
     return mean, deviation, mean - half_width, mean + half_width
 
 
+# Exact paired randomization test obtained by enumerating signs of nonzero
+# controller differences under the null hypothesis of exchangeability.
 def exact_sign_flip_test(values):
     """Two-sided paired randomization test for a zero centered difference.
 
@@ -262,6 +274,7 @@ def exact_sign_flip_test(values):
     return min(1.0, max(0.0, p_value)), 'normal_sign_flip_approximation'
 
 
+# Exact two-sided McNemar/binomial test for paired completion outcomes.
 def exact_mcnemar_test(candidate_only, baseline_only):
     """Return the exact two-sided test for paired binary outcomes."""
     discordant = candidate_only + baseline_only
@@ -275,6 +288,7 @@ def exact_mcnemar_test(candidate_only, baseline_only):
     return min(1.0, 2.0 * tail_count / (2 ** discordant))
 
 
+# Standardized paired effect: mean difference divided by its sample deviation.
 def paired_effect_dz(values):
     """Return Cohen's dz based on the standard deviation of paired differences."""
     differences = [value for value in values if math.isfinite(value)]
@@ -286,6 +300,7 @@ def paired_effect_dz(values):
     return statistics.fmean(differences) / deviation
 
 
+# Bias-adjusted sample skewness used to diagnose asymmetric difference data.
 def adjusted_fisher_pearson_skewness(values):
     """Small-sample adjusted skewness used only as a distribution diagnostic."""
     samples = [value for value in values if math.isfinite(value)]
@@ -301,6 +316,7 @@ def adjusted_fisher_pearson_skewness(values):
     return math.sqrt(count * (count - 1)) / (count - 2) * unadjusted
 
 
+# Count observations outside Tukey 1.5-IQR fences as a robustness diagnostic.
 def iqr_outlier_count(values):
     samples = [value for value in values if math.isfinite(value)]
     if len(samples) < 4:
@@ -313,6 +329,7 @@ def iqr_outlier_count(values):
     return sum(value < lower or value > upper for value in samples)
 
 
+# Map a result to its predeclared confirmatory/exploratory hypothesis family.
 def inference_metadata(track, scenario, metric):
     """Analysis-plan primary families; all other results are exploratory."""
     if scenario == 'nominal' and metric == 'temporal_position_rmse_m':
@@ -340,6 +357,7 @@ def inference_metadata(track, scenario, metric):
     return 'exploratory', f'exploratory_{metric}'
 
 
+# Apply Holm's step-down family-wise error correction within each family.
 def apply_holm_correction(rows):
     """Add strong family-wise error control within each declared family."""
     families = defaultdict(list)
@@ -362,6 +380,7 @@ def apply_holm_correction(rows):
             )
 
 
+# Classify a confidence interval against the engineering relevance band.
 def practical_interpretation(low, high, threshold):
     if not all(math.isfinite(value) for value in (low, high, threshold)):
         return 'not_predeclared'
@@ -374,6 +393,7 @@ def practical_interpretation(low, high, threshold):
     return 'confidence_interval_overlaps_practical_threshold'
 
 
+# Decode controller, track, scenario, and repetition from a standardized path.
 def parse_run_directory(summary_path):
     # Expected layout: run_01_seed_500/pid/track_circle/summary.csv
     track_dir = summary_path.parent
@@ -390,6 +410,7 @@ def parse_run_directory(summary_path):
     }
 
 
+# Traverse all run summaries and construct the common unaggregated trial table.
 def load_trials(root):
     trials = []
     for summary_path in sorted(root.glob('run_*_seed_*/*/track_*/summary.csv')):
@@ -436,6 +457,8 @@ def load_trials(root):
     return trials
 
 
+# Subtract each controller's seed-matched nominal outcome from its disturbed
+# outcome so robustness is not confused with different nominal accuracy.
 def add_nominal_degradation_metrics(trials):
     """Attach within-controller, same-seed degradation relative to nominal."""
     nominal = {}
@@ -469,6 +492,7 @@ def add_nominal_degradation_metrics(trials):
                 trial[output_metric] = perturbed_value - nominal_value
 
 
+# Write tidy raw trial values for independent reanalysis.
 def write_all_trials(root, trials):
     stable_fields = [
         'repetition', 'gazebo_seed', 'controller_family', 'track', 'scenario',
@@ -485,6 +509,7 @@ def write_all_trials(root, trials):
             writer.writerow({key: trial.get(key, '') for key in stable_fields})
 
 
+# Compute descriptive statistics for every controller/track/scenario group.
 def write_group_summary(root, trials):
     groups = defaultdict(list)
     for trial in trials:
@@ -539,6 +564,8 @@ def write_group_summary(root, trials):
     return output
 
 
+# Form seed-matched controller contrasts, perform paired inference, attach
+# practical/effect diagnostics, then apply family-wise Holm correction.
 def write_paired_differences(root, trials, practical_thresholds=None):
     if practical_thresholds is None:
         practical_thresholds = PRACTICAL_THRESHOLDS
@@ -675,6 +702,7 @@ def write_paired_differences(root, trials, practical_thresholds=None):
     return output
 
 
+# Look up the predeclared family and role for binary completion inference.
 def completion_inference_metadata(protocol, scenario):
     """Return the predeclared or legacy role of a completion comparison."""
     role = protocol.get('completion_analysis_role', 'exploratory_post_hoc')
@@ -688,6 +716,7 @@ def completion_inference_metadata(protocol, scenario):
     return 'exploratory_post_hoc', 'exploratory_completion'
 
 
+# Compare paired completion outcomes using discordant run pairs.
 def write_completion_comparison(root, trials, protocol):
     """Write a paired analysis of the binary trajectory endpoint."""
     indexed = {
@@ -796,6 +825,8 @@ def write_completion_comparison(root, trials, protocol):
     return output
 
 
+# Verify expected files, seeds, repetitions, immutable configurations, timing,
+# and pairing; return every protocol deviation rather than silently filtering.
 def audit_protocol(root, trials, protocol):
     issues = []
     if not (root / 'protocol_source.tar.gz').is_file():
@@ -1004,6 +1035,7 @@ def audit_protocol(root, trials, protocol):
     return issues
 
 
+# Summarize the number of tested and Holm-rejected hypotheses per family.
 def write_hypothesis_family_summary(root, paired_rows):
     families = defaultdict(list)
     for row in paired_rows:
@@ -1040,6 +1072,7 @@ def write_hypothesis_family_summary(root, paired_rows):
     return output
 
 
+# Extract only predeclared confirmatory rows, keeping exploratory results distinct.
 def write_confirmatory_results(root, paired_rows):
     fields = [
         'holm_family', 'candidate', 'baseline', 'track', 'scenario', 'metric',
@@ -1063,6 +1096,7 @@ def write_confirmatory_results(root, paired_rows):
     return selected
 
 
+# Produce a human-readable synopsis beside the machine-readable tables.
 def write_text_summary(root, trials, grouped, paired_rows, families, issues):
     confirmatory = [
         row for row in paired_rows
@@ -1097,6 +1131,8 @@ def write_text_summary(root, trials, grouped, paired_rows, families, issues):
         )
 
 
+# Orchestrate loading, auditing, descriptive analysis, paired inference,
+# completion comparison, multiple-testing correction, and final exit status.
 def main():
     parser = argparse.ArgumentParser(
         description='Analyze the paired PID--TVLQR--MPC campaign.'
@@ -1146,4 +1182,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Unit tests may import helpers without triggering filesystem analysis.
     main()

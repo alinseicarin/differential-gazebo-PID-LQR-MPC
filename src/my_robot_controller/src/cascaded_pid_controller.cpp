@@ -9,6 +9,9 @@
 namespace my_robot_controller
 {
 
+// This class contains only control mathematics. ROS messages, trajectory
+// lookup, feedforward addition, and actuator saturation are handled elsewhere,
+// which makes the three PID loops independently unit-testable.
 CascadedPidController::CascadedPidController(const CascadedPidConfig & config)
 {
   configure(config);
@@ -16,6 +19,9 @@ CascadedPidController::CascadedPidController(const CascadedPidConfig & config)
 
 void CascadedPidController::validate_config(const CascadedPidConfig & config) const
 {
+  // Check all three sets of gains in one pass. Zero and negative gains remain
+  // legal because experiments may intentionally disable or invert a term; the
+  // essential numerical requirement here is that every value is finite.
   const bool gains_are_finite =
     std::isfinite(config.longitudinal_kp) && std::isfinite(config.longitudinal_ki) &&
     std::isfinite(config.longitudinal_kd) &&
@@ -38,6 +44,9 @@ void CascadedPidController::validate_config(const CascadedPidConfig & config) co
 
 void CascadedPidController::configure(const CascadedPidConfig & config)
 {
+  // Each physical error channel owns separate PID memory. Sharing one PID
+  // object would incorrectly mix integrals and previous errors with different
+  // units (metres, radians, metres per second, and radians per second).
   validate_config(config);
   config_ = config;
   longitudinal_pid_.configure(
@@ -58,6 +67,8 @@ CascadedPidOutput CascadedPidController::calculate(
   double robot_heading,
   double dt)
 {
+  // The controller is deliberately strict: unlike the generic PID primitive,
+  // this higher-level block reports invalid state/timing data to its caller.
   if (!std::isfinite(longitudinal_error) || !std::isfinite(lateral_error) ||
     !std::isfinite(reference_heading) ||
     !std::isfinite(robot_heading) || !std::isfinite(dt) || dt <= 0.0)
@@ -86,11 +97,15 @@ CascadedPidOutput CascadedPidController::calculate(
   output.heading_error = wrap_angle(output.desired_heading - robot_heading);
   output.heading_pid_output = heading_pid_.calculate(output.heading_error, dt);
 
+  // The returned diagnostics preserve every intermediate signal. The ROS node
+  // can log them without recomputing the controller or exposing internal PID
+  // state, while the shared motion policy later adds trajectory feedforward.
   return output;
 }
 
 void CascadedPidController::reset()
 {
+  // All loops must start from a clean state after settling, reset, or timeout.
   longitudinal_pid_.reset();
   cross_track_pid_.reset();
   heading_pid_.reset();

@@ -73,6 +73,8 @@ CscMatrixStorage make_csc(
 
 bool is_solved_status(c_int status)
 {
+  // OSQP's "solved inaccurate" status still represents a usable solution
+  // within relaxed tolerances; all other statuses trigger a safe zero action.
   return status == OSQP_SOLVED || status == OSQP_SOLVED_INACCURATE;
 }
 
@@ -88,6 +90,8 @@ LinearMpcController::LinearMpcController(const LinearMpcConfig & config)
 
 void LinearMpcController::validate_config(const LinearMpcConfig & config) const
 {
+  // Positive weights keep the quadratic cost convex and meaningful. Actuator
+  // and solver checks prevent malformed online optimization problems.
   if (config.prediction_horizon_steps == 0u) {
     throw std::invalid_argument("MPC prediction horizon must contain at least one step");
   }
@@ -167,6 +171,9 @@ LinearMpcOutput LinearMpcController::calculate(
     }
   }
 
+  // Decision-vector layout is [e_0 ... e_N, delta_u_0 ... delta_u_(N-1)].
+  // Equality rows cover the known initial state and N dynamics transitions;
+  // the remaining rows impose component-wise input bounds.
   const std::size_t state_variable_count = kStateDimension * (horizon + 1u);
   const std::size_t input_variable_count = kInputDimension * horizon;
   const std::size_t variable_count = state_variable_count + input_variable_count;
@@ -232,6 +239,8 @@ LinearMpcOutput LinearMpcController::calculate(
   }
   CscMatrixStorage a_matrix = make_csc(constraint_count, a_columns);
 
+  // There is no linear term in the regulation cost, hence q=0. Equality
+  // constraints use identical lower/upper bounds; input rows use intervals.
   std::vector<c_float> linear_cost(variable_count, 0.0);
   std::vector<c_float> lower_bounds(constraint_count, 0.0);
   std::vector<c_float> upper_bounds(constraint_count, 0.0);
@@ -244,6 +253,8 @@ LinearMpcOutput LinearMpcController::calculate(
     const std::size_t bound_offset = dynamics_constraint_count + stage * kInputDimension;
     const double reference_linear = reference_inputs[stage].linear_velocity;
     const double reference_angular = reference_inputs[stage].angular_velocity;
+    // Optimized variables are corrections, but physical limits constrain the
+    // absolute command: u_min-u_ref <= delta_u <= u_max-u_ref.
     lower_bounds[bound_offset] = static_cast<c_float>(
       config_.minimum_linear_velocity - reference_linear);
     upper_bounds[bound_offset] = static_cast<c_float>(
@@ -254,6 +265,8 @@ LinearMpcOutput LinearMpcController::calculate(
       config_.maximum_absolute_angular_velocity - reference_angular);
   }
 
+  // OSQPData holds non-owning pointers into the vectors and CSC wrappers above;
+  // all storage therefore remains in scope until osqp_cleanup below.
   OSQPData problem{};
   problem.n = static_cast<c_int>(variable_count);
   problem.m = static_cast<c_int>(constraint_count);
@@ -263,6 +276,8 @@ LinearMpcOutput LinearMpcController::calculate(
   problem.l = lower_bounds.data();
   problem.u = upper_bounds.data();
 
+  // Start from library defaults and override only reproducibility/performance
+  // settings exposed by the thesis configuration.
   OSQPSettings settings{};
   osqp_set_default_settings(&settings);
   settings.verbose = false;
@@ -281,6 +296,8 @@ LinearMpcOutput LinearMpcController::calculate(
     throw std::runtime_error("OSQP failed to set up the MPC problem");
   }
 
+  // Receding-horizon problems change only slightly between control samples.
+  // Reusing the previous primal vector usually reduces solver iterations.
   if (previous_primal_solution_.size() == variable_count) {
     std::vector<c_float> warm_start(previous_primal_solution_.begin(),
       previous_primal_solution_.end());
@@ -302,12 +319,16 @@ LinearMpcOutput LinearMpcController::calculate(
   }
 
   if (output.solved && workspace->solution != nullptr && workspace->solution->x != nullptr) {
+    // Receding-horizon policy publishes only delta_u_0, then rebuilds and solves
+    // the problem after the next state measurement. The rest is a prediction.
     const c_float * solution = workspace->solution->x;
     const std::size_t first_input_offset = state_variable_count;
     output.correction(0) = solution[first_input_offset];
     output.correction(1) = solution[first_input_offset + 1u];
     previous_primal_solution_.assign(solution, solution + variable_count);
   } else {
+    // Never reuse a stale action after a failed solve; clear both output and
+    // warm start so the next QP begins from a known safe state.
     output.correction.setZero();
     previous_primal_solution_.clear();
   }

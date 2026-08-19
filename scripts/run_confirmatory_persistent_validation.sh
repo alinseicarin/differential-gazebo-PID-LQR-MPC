@@ -14,6 +14,9 @@ cd /home/ws
 RESULT_DIR="${1:-/home/ws/results/controller_completion_confirmatory_$(date +%Y%m%d_%H%M%S)}"
 REFERENCE_CONFIG="/home/ws/install/my_robot_controller/share/my_robot_controller/config/trajectory_reference_severe.yaml"
 
+# This wrapper does not implement trials itself. It freezes a clean independent
+# protocol through environment variables, then delegates process isolation,
+# pairing, logging, and analysis to the common comparison runner.
 COMPARISON_CONTROLLERS="pid lqr mpc" \
 COMPARISON_NOMINAL_TRACKS="" \
 COMPARISON_ROBUSTNESS_TRACK="figure_eight" \

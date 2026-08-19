@@ -9,6 +9,8 @@ namespace my_robot_controller
 namespace
 {
 
+// Normalize a velocity mismatch without dividing by a value close to zero.
+// The floor keeps the diagnostic finite while the robot starts and stops.
 double relative_discrepancy(double expected, double measured, double floor)
 {
   const double denominator = std::max({std::abs(expected), std::abs(measured), floor});
@@ -38,6 +40,9 @@ WheelSlipResult calculate_wheel_slip_metrics(
   }
 
   WheelSlipResult result;
+  // Ideal rolling converts wheel angular speeds to tangential speeds. Their
+  // mean and difference are the differential-drive predictions for chassis
+  // longitudinal velocity and yaw rate, respectively.
   result.left_wheel_tangential_velocity =
     config.wheel_radius * input.left_wheel_angular_velocity;
   result.right_wheel_tangential_velocity =
@@ -50,6 +55,8 @@ WheelSlipResult calculate_wheel_slip_metrics(
 
   const double cosine = std::cos(input.truth_yaw);
   const double sine = std::sin(input.truth_yaw);
+  // Rotate Gazebo world-frame velocity into the robot body frame. This yields
+  // physically comparable longitudinal/lateral speeds at the chassis centre.
   result.truth_body_longitudinal_velocity =
     cosine * input.truth_world_linear_x + sine * input.truth_world_linear_y;
   result.truth_body_lateral_velocity =
@@ -65,6 +72,9 @@ WheelSlipResult calculate_wheel_slip_metrics(
     result.truth_body_longitudinal_velocity +
     0.5 * config.wheel_separation * input.truth_angular_velocity;
 
+  // Positive ratios mean the wheel-based prediction exceeds measured ground
+  // motion under this expected-minus-measured convention. These are evaluation
+  // diagnostics only and never feed back into a controller.
   result.left_longitudinal_slip_ratio = relative_discrepancy(
     result.left_wheel_tangential_velocity, truth_left_wheel_velocity,
     config.minimum_speed_denominator);

@@ -7,11 +7,13 @@ import sys
 from pathlib import Path
 
 
+# Load one CSV as dictionaries keyed by its header names.
 def read_rows(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Convert a selected cell to a finite float; malformed/missing data becomes NaN.
 def finite_number(row, key):
     try:
         value = float(row[key])
@@ -20,6 +22,7 @@ def finite_number(row, key):
     return value if math.isfinite(value) else math.nan
 
 
+# Return the nearest-rank empirical percentile after excluding invalid samples.
 def percentile(values, probability):
     finite = sorted(value for value in values if math.isfinite(value))
     if not finite:
@@ -28,6 +31,8 @@ def percentile(values, probability):
     return finite[index]
 
 
+# Integrate v^2 + (omega/omega_max)^2 with the trapezoidal rule. Normalizing
+# angular speed makes the two differently dimensioned command channels comparable.
 def normalized_command_activity(rows):
     integral = 0.0
     previous_time = None
@@ -48,6 +53,8 @@ def normalized_command_activity(rows):
     return integral
 
 
+# Combine controller timing, evaluator tracking, and applied-command logs for
+# one horizon directory into a single machine-readable result record.
 def summarize(study_dir):
     nominal = study_dir / 'nominal'
     controller_rows = read_rows(nominal / 'controller.csv')
@@ -94,12 +101,14 @@ def summarize(study_dir):
     }
 
 
+# Emit stable decimal text for CSV reproducibility while retaining integers.
 def format_value(value):
     if isinstance(value, int):
         return str(value)
     return f'{value:.9f}'
 
 
+# Discover all horizon_* trials, sort by N, and write CSV plus a readable report.
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(
@@ -148,4 +157,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # This guard permits importing the helper functions without running the CLI.
     main()

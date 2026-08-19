@@ -17,6 +17,8 @@ source /home/ws/install/setup.bash
 set -u
 
 CONTROLLER_FAMILY="${PERTURBATION_CONTROLLER_FAMILY:-pid}"
+# Selectors define one controller, one track/seed, and an ordered scenario list.
+# Every scenario is delegated to the fresh-Gazebo low-level case runner.
 RESULT_DIR="${1:-/home/ws/results/${CONTROLLER_FAMILY}_perturbation_suite}"
 SCENARIOS="${PERTURBATION_SCENARIOS:-nominal angular_pulse_train angular_constant left_wheel_loss left_wheel_loss_persistent command_delay localization_noise localization_yaw_bias}"
 COMMON_GUI="${PERTURBATION_GUI:-false}"
@@ -27,6 +29,7 @@ COMMON_REFERENCE_CONFIG="${PERTURBATION_REFERENCE_CONFIG_PATH:-/home/ws/install/
 ANGULAR_PULSE_START_DELAYS="${PERTURBATION_ANGULAR_PULSE_START_DELAYS:-6.0;18.0;30.0}"
 FIXED_OBSERVATION_DURATION="${PERTURBATION_FIXED_OBSERVATION_DURATION:-0.0}"
 
+# Choose the family default YAML while keeping scenario definitions below common.
 case "${CONTROLLER_FAMILY}" in
   pid)
     DEFAULT_CONFIG="/home/ws/install/my_robot_controller/share/my_robot_controller/config/pid_cascade.yaml"
@@ -49,6 +52,8 @@ failed_cases=0
 
 run_case()
 {
+  # Begin from a nominal pass-through state, then the scenario case statement
+  # changes only the intended fault domain and magnitude.
   local scenario="$1"
   local domain="none"
   local command_enabled="false"
@@ -67,6 +72,8 @@ run_case()
   local odometry_y_bias="0.0"
   local odometry_yaw_bias="0.0"
 
+  # Scenario catalogue: each label maps to an explicit physical/information
+  # fault used identically for PID, LQR, and MPC.
   case "${scenario}" in
     nominal)
       ;;
@@ -122,6 +129,7 @@ run_case()
   esac
 
   echo "Running scenario: ${scenario} (${domain})"
+  # Export the resolved scenario to an isolated low-level run directory.
   if ! PERTURBATION_SCENARIO="${scenario}" \
     PERTURBATION_DOMAIN="${domain}" \
     PERTURBATION_GUI="${COMMON_GUI}" \
@@ -154,10 +162,13 @@ run_case()
 }
 
 for scenario in ${SCENARIOS}; do
+  # Continue after an individual failure so the final report lists all cases.
   run_case "${scenario}"
 done
 
 if [[ -f "${RESULT_DIR}/nominal/ground_truth.csv" ]]; then
+  # Analysis uses nominal data as the matched baseline for disturbance-induced
+  # deviation and performs timing/frequency audits across every stream.
   python3 scripts/analyze_perturbation_suite.py "${RESULT_DIR}"
 else
   echo "Nominal baseline is missing; aggregate analysis cannot be generated"
@@ -165,6 +176,7 @@ else
 fi
 
 if [[ "${failed_cases}" -ne 0 ]]; then
+  # Nonzero status lets outer paired-campaign logic reject incomplete bundles.
   echo "Perturbation suite finished with ${failed_cases} failed case(s)"
   exit 1
 fi

@@ -10,6 +10,9 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     """Declare common experiment paths and construct the LQR control graph."""
+    # FindPackageShare resolves the installed package rather than assuming a
+    # particular workspace location. LaunchConfiguration values are evaluated
+    # later, after any command-line overrides have been parsed.
     package_share = FindPackageShare('my_robot_controller')
     csv_path = LaunchConfiguration('csv_path')
     output_csv_path = LaunchConfiguration('output_csv_path')
@@ -21,6 +24,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
+        # Input/output paths and YAML files form the reproducible experiment
+        # boundary; use_sim_time synchronizes both nodes with Gazebo /clock.
         DeclareLaunchArgument(
             'csv_path',
             default_value=PathJoinSubstitution([
@@ -53,6 +58,7 @@ def generate_launch_description():
             description='Common timed-reference configuration',
         ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        # Control node consumes only filtered odometry and publishes commands.
         Node(
             package='my_robot_controller',
             executable='lqr_node',
@@ -70,6 +76,8 @@ def generate_launch_description():
                 },
             ],
         ),
+        # Evaluator reconstructs the same reference but uses privileged truth
+        # only for scoring; it has no command/state output to the controller.
         Node(
             package='my_robot_controller',
             executable='trajectory_evaluator_node',

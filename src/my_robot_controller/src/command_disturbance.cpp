@@ -21,6 +21,8 @@ CommandDisturbance::CommandDisturbance(const CommandDisturbanceConfig & config)
 
 void CommandDisturbance::validate_config(const CommandDisturbanceConfig & config) const
 {
+  // Validate schedules, fault magnitudes, and the independent final safety
+  // bounds before the injector is allowed to forward any controller command.
   if (!std::isfinite(config.start_delay) || config.start_delay < 0.0) {
     throw std::invalid_argument("Command-fault start_delay must be finite and non-negative");
   }
@@ -32,6 +34,8 @@ void CommandDisturbance::validate_config(const CommandDisturbanceConfig & config
             "A persistent command fault may have only one start time");
   }
   double previous_start = -config.duration;
+  // Repeated pulse windows must be chronological and non-overlapping so each
+  // logged active-window index has an unambiguous experimental meaning.
   for (const double start : config.start_delays) {
     if (!std::isfinite(start) || start < 0.0) {
       throw std::invalid_argument(
@@ -124,6 +128,8 @@ CommandDisturbanceOutput CommandDisturbance::apply(
       config_.wheel_separation;
   }
 
+  // Add body-command biases after wheel effectiveness. This allows one scenario
+  // to represent either a command pulse, an asymmetric drive loss, or both.
   const double linear_bias = output.fault_active ? config_.linear_velocity_bias : 0.0;
   const double angular_bias = output.fault_active ? config_.angular_velocity_bias : 0.0;
   output.applied_linear_velocity = std::clamp(
@@ -151,6 +157,8 @@ int CommandDisturbance::active_window_index(double elapsed_time) const
     return -1;
   }
 
+  // An empty vector selects the single legacy start_delay parameter; otherwise
+  // every vector entry defines one numbered repeated pulse window.
   if (config_.start_delays.empty()) {
     if (elapsed_time + kScheduleTimeTolerance < config_.start_delay) {
       return -1;
@@ -213,6 +221,8 @@ DelayedCommandOutput CommandDelay::apply(
             "Delayed command and elapsed time must be finite and non-negative");
   }
 
+  // A backwards time jump indicates a new/reset simulation clock. Discard the
+  // old run so samples from its future cannot be replayed into the new run.
   if (!history_.empty() && elapsed_time + kScheduleTimeTolerance < history_.back().time) {
     reset();
   }
@@ -227,6 +237,8 @@ DelayedCommandOutput CommandDelay::apply(
   output.delay_active = fault_active && delay_ > 0.0;
 
   if (output.delay_active) {
+    // Search newest-to-oldest for the most recent command not newer than
+    // t-delay. This is a zero-order-hold replay of the recorded command stream.
     const double target_time = elapsed_time - delay_;
     bool source_found = false;
     for (auto iterator = history_.rbegin(); iterator != history_.rend(); ++iterator) {
@@ -247,6 +259,7 @@ DelayedCommandOutput CommandDelay::apply(
     }
   }
 
+  // Bound memory growth while retaining margin beyond the configured delay.
   const double oldest_useful_time = elapsed_time - delay_ - 1.0;
   while (history_.size() > 2u && history_[1].time < oldest_useful_time) {
     history_.pop_front();

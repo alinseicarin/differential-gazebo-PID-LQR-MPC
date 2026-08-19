@@ -7,8 +7,10 @@ namespace my_robot_controller
 /// Inputs needed to compare differential-drive wheel motion with body truth.
 struct WheelSlipInput
 {
+  // Joint-state angular rates [rad/s].
   double left_wheel_angular_velocity{0.0};
   double right_wheel_angular_velocity{0.0};
+  // Gazebo world-frame chassis twist [m/s], pose yaw [rad], and yaw rate [rad/s].
   double truth_world_linear_x{0.0};
   double truth_world_linear_y{0.0};
   double truth_yaw{0.0};
@@ -18,20 +20,24 @@ struct WheelSlipInput
 /// Geometric and numerical settings of the differential-drive model.
 struct WheelSlipConfig
 {
+  // Physical wheel geometry [m].
   double wheel_radius{0.1};
   double wheel_separation{0.35};
+  // Velocity floor [m/s] used to normalize ratios near zero motion.
   double minimum_speed_denominator{0.05};
 };
 
 /// Dimensioned velocities and dimensionless discrepancies under pure rolling.
 struct WheelSlipResult
 {
+  // Wheel-derived and truth-derived dimensional velocities.
   double left_wheel_tangential_velocity{0.0};
   double right_wheel_tangential_velocity{0.0};
   double wheel_kinematic_linear_velocity{0.0};
   double wheel_kinematic_angular_velocity{0.0};
   double truth_body_longitudinal_velocity{0.0};
   double truth_body_lateral_velocity{0.0};
+  // Dimensionless mismatch ratios followed by body sideslip angle [rad].
   double left_longitudinal_slip_ratio{0.0};
   double right_longitudinal_slip_ratio{0.0};
   double center_longitudinal_slip_ratio{0.0};

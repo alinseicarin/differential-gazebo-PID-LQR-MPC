@@ -9,20 +9,25 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _float(name):
+    # Convert string launch substitutions into strongly typed ROS parameters.
     return ParameterValue(LaunchConfiguration(name), value_type=float)
 
 
 def _bool(name):
+    # Fault-enable and simulation-clock switches must reach ROS as booleans.
     return ParameterValue(LaunchConfiguration(name), value_type=bool)
 
 
 def _int(name):
+    # Noise seeds are discrete integers, not floating-point magnitudes.
     return ParameterValue(LaunchConfiguration(name), value_type=int)
 
 
 def generate_launch_description():
     """Construct clean evaluation and perturbed TVLQR feedback/command paths."""
     package_share = FindPackageShare('my_robot_controller')
+    # One graph covers nominal and every fault scenario; switches and magnitudes
+    # are supplied by the campaign script, not hard-coded per controller.
     arguments = [
         DeclareLaunchArgument(
             'csv_path',
@@ -67,6 +72,7 @@ def generate_launch_description():
         DeclareLaunchArgument('noise_seed', default_value='2026'),
     ]
 
+    # Force commands and feedback through the same injector interfaces as PID.
     controller = Node(
         package='my_robot_controller',
         executable='lqr_node',
@@ -89,6 +95,7 @@ def generate_launch_description():
         ],
     )
 
+    # Command-path injector models actuator loss, bias pulses, and delay.
     command_injector = Node(
         package='my_robot_controller',
         executable='command_disturbance_injector',
@@ -116,6 +123,7 @@ def generate_launch_description():
         }],
     )
 
+    # Odometry injector corrupts only information presented to the controller.
     odometry_injector = Node(
         package='my_robot_controller',
         executable='odometry_disturbance_injector',
@@ -140,6 +148,7 @@ def generate_launch_description():
         }],
     )
 
+    # Scoring remains connected to clean state/truth and cannot affect control.
     evaluator = Node(
         package='my_robot_controller',
         executable='trajectory_evaluator_node',

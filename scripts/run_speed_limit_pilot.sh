@@ -5,6 +5,8 @@ set -eo pipefail
 
 cd /home/ws
 
+# Environment variables let a short exploratory sweep change speed, GUI, curve
+# slowdown, or repetitions without editing the frozen campaign scripts.
 RESULT_ROOT="${1:-/tmp/speed_limit_pilot}"
 SPEED_TEXT="${SPEED_LIMIT_PILOT_SPEEDS:-0.4 0.6 0.8 1.0}"
 GUI="${SPEED_LIMIT_PILOT_GUI:-false}"
@@ -12,6 +14,7 @@ CURVATURE_GAIN="${SPEED_LIMIT_PILOT_CURVATURE_GAIN:-0.0}"
 REPETITIONS="${SPEED_LIMIT_PILOT_REPETITIONS:-3}"
 
 mkdir -p "${RESULT_ROOT}"
+# Convert the whitespace-separated selector to a Bash array and validate it.
 read -r -a SPEEDS <<< "${SPEED_TEXT}"
 if [[ "${#SPEEDS[@]}" -eq 0 ]]; then
   echo 'At least one pilot speed is required' >&2
@@ -28,6 +31,8 @@ for speed in "${SPEEDS[@]}"; do
   reference_config="${speed_directory}/trajectory_reference.yaml"
   mkdir -p "${speed_directory}"
 
+  # Generate one temporary common-reference YAML for this requested speed. All
+  # other time-law limits remain identical so speed is the isolated variable.
   printf '%s\n' \
     '/**:' \
     '  ros__parameters:' \
@@ -42,6 +47,8 @@ for speed in "${SPEEDS[@]}"; do
     '    maximum_reference_angular_velocity: 1.5' \
     > "${reference_config}"
 
+  # Reuse the ordinary PID benchmark runner on the circle only; it supplies a
+  # fresh Gazebo process and multiple seeds for every speed candidate.
   echo "SPEED_LIMIT_PILOT speed=${speed} m/s"
   PID_BENCHMARK_GUI="${GUI}" \
   PID_BENCHMARK_TRACKS='circle' \
@@ -52,4 +59,6 @@ for speed in "${SPEEDS[@]}"; do
     bash scripts/run_pid_benchmarks.sh "${speed_directory}"
 done
 
+# Aggregate saturation, slip, tracking, and completion to locate a severe yet
+# still meaningful operating regime.
 python3 scripts/analyze_speed_limit_pilot.py "${RESULT_ROOT}"

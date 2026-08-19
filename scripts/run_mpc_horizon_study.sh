@@ -24,6 +24,8 @@ RESULT_DIR="${1:-/home/ws/results/mpc_horizon_study_$(date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "${RESULT_DIR}"
 
+# Each iteration changes only N. It keeps track, Gazebo seed, Q/R, actuator
+# limits, and nominal disturbance state fixed for an interpretable study.
 for horizon in ${HORIZONS}; do
   if ! [[ "${horizon}" =~ ^[1-9][0-9]*$ ]]; then
     echo "Invalid positive MPC horizon: ${horizon}"
@@ -42,5 +44,6 @@ for horizon in ${HORIZONS}; do
       "${RESULT_DIR}/horizon_${horizon}"
 done
 
+# Join controller QP timings with physical tracking and command activity.
 python3 scripts/analyze_mpc_horizon_study.py "${RESULT_DIR}"
 echo "MPC horizon study complete: ${RESULT_DIR}/horizon_summary.csv"

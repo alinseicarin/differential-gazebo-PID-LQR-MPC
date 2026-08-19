@@ -96,6 +96,9 @@ void PathReferenceManager::configure(const PathReferenceConfig & config)
 
 void PathReferenceManager::load_csv(const std::string & file_path)
 {
+  // The benchmark format is intentionally minimal: every non-empty row must
+  // contain exactly x,y. Strict parsing catches accidental headers, missing
+  // fields, and malformed tracks before an experiment starts moving the robot.
   if (file_path.empty()) {
     throw std::runtime_error("Path CSV file name must not be empty");
   }
@@ -137,6 +140,8 @@ void PathReferenceManager::load_csv(const std::string & file_path)
 
 void PathReferenceManager::set_path(const std::vector<Point2D> & waypoints)
 {
+  // Programmatic paths pass through the same checks and preprocessing as CSV
+  // paths, which keeps unit tests representative of real experiment loading.
   if (waypoints.size() < 2) {
     throw std::invalid_argument("Path must contain at least two waypoints");
   }
@@ -154,6 +159,9 @@ void PathReferenceManager::set_path(const std::vector<Point2D> & waypoints)
 
 void PathReferenceManager::preprocess_path()
 {
+  // Convert raw waypoints into reusable segment geometry once. The 30 Hz
+  // control loop can then project and sample without recalculating lengths,
+  // headings, or cumulative curvilinear coordinates on every callback.
   segments_.clear();
   cumulative_lengths_.assign(waypoints_.size(), 0.0);
   segments_.reserve(waypoints_.size() - 1);
@@ -174,6 +182,8 @@ void PathReferenceManager::preprocess_path()
     }
 
     cumulative_lengths_[index] = cumulative_length;
+    // Each segment stores p(s)=start+fraction*delta and the curvilinear
+    // coordinate at its start. Curvature is filled in by the following pass.
     segments_.push_back(
       {start, {delta_x, delta_y}, length, length_squared,
         std::atan2(delta_y, delta_x), 0.0, cumulative_length});
@@ -219,6 +229,8 @@ void PathReferenceManager::preprocess_path()
 
 void PathReferenceManager::reset_progress()
 {
+  // Projection is causal within a run. Resetting permits a new run to search
+  // again from the first segment instead of inheriting the previous endpoint.
   current_segment_index_ = 0;
   current_progress_ = 0.0;
   has_progress_ = false;
@@ -253,6 +265,8 @@ PathGeometrySample PathReferenceManager::make_sample(
       sample.remaining_length / config_.endpoint_slowdown_distance, 0.0, 1.0);
   }
 
+  // Geometry supplies a preliminary curvature-aware speed and omega=kappa*v.
+  // The trajectory manager later adds time, acceleration, and braking limits.
   sample.reference_linear_velocity =
     config_.nominal_linear_velocity * curvature_factor * endpoint_factor;
   sample.reference_angular_velocity =
@@ -270,6 +284,8 @@ PathGeometrySample PathReferenceManager::sample_at_progress(double progress) con
   }
 
   const double clamped_progress = std::clamp(progress, 0.0, total_length_);
+  // Cumulative lengths are sorted, so binary search locates the segment that
+  // contains the requested arc length without scanning the entire path.
   const auto upper = std::upper_bound(
     cumulative_lengths_.begin(), cumulative_lengths_.end(), clamped_progress);
   std::size_t segment_index = 0;
@@ -297,6 +313,9 @@ PathReference PathReferenceManager::update(
     throw std::invalid_argument("Robot state supplied to path reference is not finite");
   }
 
+  // Search only forward from the last accepted segment. This reduces work and
+  // prevents a closed path or figure-eight crossing from jumping to an earlier
+  // branch with nearly the same Cartesian distance.
   const std::size_t search_begin = current_segment_index_;
   const std::size_t search_end = std::min(
     search_begin + config_.search_window + 1, segments_.size());
@@ -309,6 +328,9 @@ PathReference PathReferenceManager::update(
     const Segment & segment = segments_[index];
     const double from_start_x = robot_x - segment.start.x;
     const double from_start_y = robot_y - segment.start.y;
+    // Orthogonal projection parameter t = ((robot-start).delta)/|delta|^2.
+    // Clamping t to [0,1] turns projection onto the infinite supporting line
+    // into projection onto this finite path segment.
     const double raw_fraction =
       (from_start_x * segment.delta.x + from_start_y * segment.delta.y) /
       segment.length_squared;
@@ -339,6 +361,7 @@ PathReference PathReferenceManager::update(
   const Segment & best_segment = segments_[best_segment_index];
   double candidate_progress =
     best_segment.cumulative_start + best_fraction * best_segment.length;
+  // Geometric noise must not move the accepted path coordinate backwards.
   if (has_progress_ && candidate_progress < current_progress_) {
     candidate_progress = current_progress_;
   }
@@ -355,6 +378,8 @@ PathReference PathReferenceManager::update(
 
   PathReference reference;
   reference.path = sample;
+  // The 2-D signed cross product tangent x (robot-reference) defines the
+  // cross-track sign consistently on straight and curved segments.
   reference.cross_track_error = tangent_x * error_y - tangent_y * error_x;
   reference.heading_error = wrap_angle(sample.heading - robot_heading);
 

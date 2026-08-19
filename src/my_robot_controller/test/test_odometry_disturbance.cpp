@@ -6,6 +6,9 @@
 
 namespace
 {
+// Schedule, bias, and random repeatability are tested without ROS transport.
+
+// Before the active window the pose passes through unchanged.
 TEST(OdometryDisturbance, PassesPoseBeforeFault)
 {
   my_robot_controller::OdometryDisturbanceConfig config;
@@ -21,6 +24,7 @@ TEST(OdometryDisturbance, PassesPoseBeforeFault)
   EXPECT_DOUBLE_EQ(output.applied_yaw, 0.4);
 }
 
+// Deterministic offsets are added only while the window is active.
 TEST(OdometryDisturbance, AppliesDeterministicBiasInsideWindow)
 {
   my_robot_controller::OdometryDisturbanceConfig config;
@@ -38,6 +42,7 @@ TEST(OdometryDisturbance, AppliesDeterministicBiasInsideWindow)
   EXPECT_NEAR(output.applied_yaw, 0.7, 1.0e-12);
 }
 
+// Equal seeds must generate identical stochastic sample traces.
 TEST(OdometryDisturbance, SameSeedReproducesSameNoiseTrace)
 {
   my_robot_controller::OdometryDisturbanceConfig config;
@@ -58,6 +63,7 @@ TEST(OdometryDisturbance, SameSeedReproducesSameNoiseTrace)
   }
 }
 
+// Reset must replay, not continue, the configured random realization.
 TEST(OdometryDisturbance, ResetReplaysNoiseTrace)
 {
   my_robot_controller::OdometryDisturbanceConfig config;
@@ -74,6 +80,7 @@ TEST(OdometryDisturbance, ResetReplaysNoiseTrace)
   EXPECT_DOUBLE_EQ(first.y_perturbation, replay.y_perturbation);
 }
 
+// Negative standard deviation has no physical/statistical meaning.
 TEST(OdometryDisturbance, RejectsNegativeNoiseDeviation)
 {
   my_robot_controller::OdometryDisturbanceConfig config;

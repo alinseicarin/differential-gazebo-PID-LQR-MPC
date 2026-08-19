@@ -9,6 +9,8 @@ namespace my_robot_controller
 {
 namespace
 {
+// Accommodate sub-microsecond error introduced when ROS integer timestamps are
+// converted to floating-point elapsed seconds.
 constexpr double kScheduleTimeTolerance = 1.0e-6;
 }
 
@@ -50,6 +52,8 @@ void OdometryDisturbance::configure(const OdometryDisturbanceConfig & config)
 
 void OdometryDisturbance::reset()
 {
+  // Re-seeding makes nominally identical repetitions reproduce the same noise
+  // realization; varying random_seed creates controlled independent trials.
   random_engine_.seed(config_.random_seed);
   standard_normal_.reset();
 }
@@ -78,6 +82,7 @@ OdometryDisturbanceOutput OdometryDisturbance::apply(
   }
 
   OdometryDisturbanceOutput output;
+  // Preserve clean and disturbed poses together for transparent CSV logging.
   output.nominal_x = nominal_x;
   output.nominal_y = nominal_y;
   output.nominal_yaw = wrap_angle(nominal_yaw);
@@ -87,6 +92,8 @@ OdometryDisturbanceOutput OdometryDisturbance::apply(
   output.fault_active = is_active(elapsed_time);
 
   if (output.fault_active) {
+    // Independent standard-normal draws are scaled by configured standard
+    // deviations and combined with deterministic sensor biases.
     output.x_perturbation = config_.x_bias +
       config_.position_noise_standard_deviation * standard_normal_(random_engine_);
     output.y_perturbation = config_.y_bias +

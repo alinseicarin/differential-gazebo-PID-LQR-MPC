@@ -13,6 +13,8 @@ namespace
 constexpr std::size_t kHorizon = 12u;
 constexpr double kSamplePeriod = 1.0 / 30.0;
 
+// Helpers create one repeatable straight-path quadratic program and keep the
+// individual tests focused on an optimization property rather than setup.
 std::vector<my_robot_controller::DiscreteErrorModel> straight_models()
 {
   return std::vector<my_robot_controller::DiscreteErrorModel>(
@@ -38,6 +40,8 @@ my_robot_controller::LinearMpcController make_controller()
 
 }  // namespace
 
+// The suite checks configuration, equilibrium, correction signs, absolute
+// command constraints, and prediction-horizon dimension validation.
 TEST(LinearMpcController, RejectsInvalidConfiguration)
 {
   my_robot_controller::LinearMpcConfig config;

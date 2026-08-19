@@ -9,6 +9,7 @@ import statistics
 from pathlib import Path
 
 
+# Read one named CSV field as a finite float and return NaN on bad input.
 def finite(row, key):
     """Return a finite float from a CSV row, or None when unavailable."""
     try:
@@ -18,11 +19,13 @@ def finite(row, key):
     return value if math.isfinite(value) else None
 
 
+# Root-mean-square helper used for tracking and slip signals.
 def rms(values):
     """Calculate root-mean-square for a non-empty numeric sequence."""
     return math.sqrt(sum(value * value for value in values) / len(values))
 
 
+# Extract the repetition number encoded by the campaign directory/file name.
 def repetition_from_path(path):
     """Extract the benchmark repetition from a result filename."""
     match = re.search(r'_run([0-9]+)_ground_truth[.]csv$', path.name)
@@ -31,6 +34,7 @@ def repetition_from_path(path):
     return int(match.group(1))
 
 
+# Reduce one raw trial CSV to speed, error, slip, completion, and timing metrics.
 def summarize_file(path, requested_speed, maximum_linear, maximum_angular):
     """Summarize one ground-truth trajectory CSV."""
     with path.open(newline='', encoding='utf-8') as stream:
@@ -70,6 +74,7 @@ def summarize_file(path, requested_speed, maximum_linear, maximum_angular):
     if not moving or not valid:
         raise RuntimeError(f'{path}: no moving samples with valid wheel state')
 
+    # Extract one finite metric column from a selected observation subset.
     def values(source, key, absolute=False):
         result = []
         for row in source:
@@ -140,6 +145,7 @@ def summarize_file(path, requested_speed, maximum_linear, maximum_angular):
     }
 
 
+# Decode the requested nominal speed from a speed_* directory name.
 def speed_from_directory(path):
     """Decode speed_0p8-style result-directory names."""
     name = path.parent.name
@@ -148,6 +154,8 @@ def speed_from_directory(path):
     return float(name[len('speed_'):].replace('p', '.'))
 
 
+# Traverse pilot results, write tidy summaries, and identify the onset of
+# saturation/slip/completion degradation used to choose the severe regime.
 def main():
     """Find pilot CSV files and write one deterministic summary."""
     parser = argparse.ArgumentParser()
@@ -243,4 +251,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Keep helpers importable by tests or notebooks without executing the CLI.
     main()

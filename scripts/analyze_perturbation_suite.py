@@ -8,11 +8,13 @@ import sys
 from pathlib import Path
 
 
+# Load a CSV stream as dictionaries indexed by its header.
 def read_rows(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Parse one finite numeric field; invalid/missing cells remain explicit NaN.
 def number(row, key):
     try:
         value = float(row[key])
@@ -21,10 +23,12 @@ def number(row, key):
     return value if math.isfinite(value) else math.nan
 
 
+# Normalize a radian difference to the shortest signed interval [-pi, pi].
 def wrap_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+# Piecewise-linearly interpolate a sampled scalar stream at a requested time.
 def interpolate(times, values, query):
     if not times or query < times[0] or query > times[-1]:
         return math.nan
@@ -41,10 +45,12 @@ def interpolate(times, values, query):
     return values[before] + fraction * (values[upper] - values[before])
 
 
+# Interpret metadata flags written as common textual boolean representations.
 def enabled(metadata, key):
     return metadata.get(key, '').strip().lower() == 'true'
 
 
+# Limit samples to the common duration used for fair scenario comparisons.
 def crop_to_observation_horizon(rows, time_key, duration):
     """Exclude polling overshoot beyond a predeclared experiment horizon."""
     if not math.isfinite(duration) or duration <= 0.0:
@@ -56,6 +62,7 @@ def crop_to_observation_horizon(rows, time_key, duration):
     ]
 
 
+# Infer a run horizon from the timed reference plus allowed terminal settling.
 def inferred_reference_observation_horizon(rows, settling_duration=2.0):
     """Return a common reference-motion horizon plus a settling interval.
 
@@ -77,6 +84,7 @@ def inferred_reference_observation_horizon(rows, settling_duration=2.0):
     return max(moving_times) + settling_duration
 
 
+# Decode either the repeated start list or the legacy single start metadata.
 def configured_fault_starts(metadata):
     repeated = metadata.get('fault_start_delays', '').strip()
     if repeated:
@@ -84,6 +92,8 @@ def configured_fault_starts(metadata):
     return [float(metadata['fault_start'])]
 
 
+# Construct the active [start,end) intervals, extending persistent faults to
+# the observed end of the run rather than their nominal pulse duration.
 def fault_windows(metadata, rows):
     """Return the physical fault intervals declared for one scenario."""
     if not (
@@ -101,6 +111,7 @@ def fault_windows(metadata, rows):
     return windows, persistent
 
 
+# Return which fault interval contains a time, or -1 outside every interval.
 def window_index(time, windows):
     for index, (start, end) in enumerate(windows):
         if start <= time < end:
@@ -108,6 +119,7 @@ def window_index(time, windows):
     return None
 
 
+# Compute a time-weighted RMS with trapezoidal integration on irregular samples.
 def time_rms(rows, key):
     integral = 0.0
     duration = 0.0
@@ -129,6 +141,7 @@ def time_rms(rows, key):
     return math.sqrt(integral / duration) if duration > 0.0 else math.nan
 
 
+# Measure tracking magnitude specifically while scheduled disturbances are active.
 def active_window_metrics(rows, windows):
     active = [
         row for row in rows
@@ -168,6 +181,8 @@ def active_window_metrics(rows, windows):
     return iae, sum(tail) / len(tail) if tail else math.nan
 
 
+# Time-align a disturbed run with its nominal counterpart and quantify induced
+# deviation during and after faults; persistent cases use their final tail.
 def baseline_deviation(rows, baseline_rows, windows, persistent):
     baseline_times = [number(row, 'time') for row in baseline_rows]
     baseline_cte = [number(row, 'true_cross_track_error') for row in baseline_rows]
@@ -235,6 +250,7 @@ def baseline_deviation(rows, baseline_rows, windows, persistent):
     return peak_cte, peak_heading, recovery, details
 
 
+# Summarize nominal/applied command amplitudes, saturation, and injected changes.
 def command_metrics(rows):
     applied_angular = [
         abs(number(row, 'applied_angular_command')) for row in rows
@@ -267,6 +283,7 @@ def command_metrics(rows):
     )
 
 
+# Verify empirical perturbation mean/dispersion from disturbed-odometry logs.
 def noise_metrics(rows):
     position_squared = []
     yaw_squared = []
@@ -287,6 +304,7 @@ def noise_metrics(rows):
     return position_rms, yaw_rms
 
 
+# Locate measured rising/falling fault-state transitions in command logs.
 def fault_transitions(rows):
     starts = []
     ends = []
@@ -301,6 +319,7 @@ def fault_transitions(rows):
     return starts, ends
 
 
+# Compare requested fault timing against both metadata and observed transitions.
 def audit_fault_timing(
         scenario, metadata, truth_rows, command_rows, odometry_rows):
     """Verify schedule, shared time origin, and nonzero reference motion."""
@@ -326,6 +345,7 @@ def audit_fault_timing(
     persistent = enabled(metadata, 'fault_persistent')
     tolerance = 0.075  # More than two 30 Hz samples, but far below 1 s.
 
+    # Compare one observed stream's transitions with the expected schedule.
     def audit_stream(label, rows, expected):
         starts, ends = fault_transitions(rows)
         if not expected:
@@ -393,6 +413,7 @@ def audit_fault_timing(
     return issues
 
 
+# Check median sample period/frequency and dropped or highly irregular intervals.
 def audit_sampling_frequency(scenario, stream, rows, time_key, expected=30.0):
     times = [number(row, time_key) for row in rows]
     times = [value for value in times if math.isfinite(value)]
@@ -420,6 +441,7 @@ def audit_sampling_frequency(scenario, stream, rows, time_key, expected=30.0):
     return []
 
 
+# Serialize numbers consistently while leaving categorical values untouched.
 def format_value(value):
     if isinstance(value, str):
         return value
@@ -428,6 +450,8 @@ def format_value(value):
     return '' if not math.isfinite(value) else f'{value:.9f}'
 
 
+# Discover scenario directories, join controller/evaluator/injector streams,
+# calculate metrics and audit findings, then write suite-wide CSV/text outputs.
 def main():
     if len(sys.argv) != 2:
         raise SystemExit('usage: analyze_perturbation_suite.py RESULT_DIRECTORY')
@@ -669,4 +693,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Allow importing analysis helpers without executing filesystem traversal.
     main()

@@ -9,14 +9,17 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _float(name):
+    # Launch arguments begin as strings; ParameterValue supplies ROS types.
     return ParameterValue(LaunchConfiguration(name), value_type=float)
 
 
 def _bool(name):
+    # Interpret values such as "true" as booleans instead of literal text.
     return ParameterValue(LaunchConfiguration(name), value_type=bool)
 
 
 def _int(name):
+    # Preserve the integer type required by the deterministic random seed.
     return ParameterValue(LaunchConfiguration(name), value_type=int)
 
 
@@ -24,6 +27,9 @@ def generate_launch_description():
     """Construct clean feedback/evaluation and perturbed controller paths."""
     package_share = FindPackageShare('my_robot_controller')
 
+    # All scenarios use this one graph. Setting both fault switches false gives
+    # the nominal control, while other arguments select pulse, delay, wheel
+    # effectiveness, bias, or odometry-noise cases without editing source.
     arguments = [
         DeclareLaunchArgument(
             'csv_path',
@@ -68,6 +74,8 @@ def generate_launch_description():
         DeclareLaunchArgument('noise_seed', default_value='2026'),
     ]
 
+    # Remappings force every PID command and every observed pose through the
+    # injectors. Disabled injectors remain transparent, preserving graph parity.
     controller = Node(
         package='my_robot_controller',
         executable='pid_node',
@@ -90,6 +98,7 @@ def generate_launch_description():
         ],
     )
 
+    # Downstream actuator/transport fault: nominal Twist in, applied Twist out.
     command_injector = Node(
         package='my_robot_controller',
         executable='command_disturbance_injector',
@@ -121,6 +130,7 @@ def generate_launch_description():
         }],
     )
 
+    # Upstream information fault: clean EKF pose in, controller-only pose out.
     odometry_injector = Node(
         package='my_robot_controller',
         executable='odometry_disturbance_injector',
@@ -145,6 +155,7 @@ def generate_launch_description():
         }],
     )
 
+    # Evaluator intentionally stays on clean EKF plus Gazebo truth topics.
     evaluator = Node(
         package='my_robot_controller',
         executable='trajectory_evaluator_node',
@@ -162,6 +173,8 @@ def generate_launch_description():
         ],
     )
 
+    # ROS launch starts actions together; node-level readiness and the retained
+    # experiment-start topic provide deterministic synchronization.
     return LaunchDescription(
         arguments + [controller, command_injector, odometry_injector, evaluator]
     )

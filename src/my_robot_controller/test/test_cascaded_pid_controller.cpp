@@ -9,6 +9,10 @@ namespace
 {
 constexpr double kPi = 3.14159265358979323846;
 
+// The suite supplies simple errors whose correct response direction is known
+// analytically. Each test creates fresh PID memory and isolates one contract.
+
+// Perfect alignment should leave both command corrections at zero.
 TEST(CascadedPidController, AlignedRobotNeedsNoAngularFeedback)
 {
   my_robot_controller::CascadedPidController controller;
@@ -19,6 +23,7 @@ TEST(CascadedPidController, AlignedRobotNeedsNoAngularFeedback)
   EXPECT_NEAR(output.heading_pid_output, 0.0, 1.0e-12);
 }
 
+// A timed reference ahead of the robot requires positive speed correction.
 TEST(CascadedPidController, ReferenceAheadRequestsPositiveLinearCorrection)
 {
   my_robot_controller::CascadedPidController controller;
@@ -28,6 +33,7 @@ TEST(CascadedPidController, ReferenceAheadRequestsPositiveLinearCorrection)
   EXPECT_GT(output.longitudinal_pid_output, 0.0);
 }
 
+// Check propagation of lateral-error sign through outer and inner loops.
 TEST(CascadedPidController, ReferenceRightOfRobotCommandsRightTurn)
 {
   my_robot_controller::CascadedPidController controller;
@@ -41,6 +47,7 @@ TEST(CascadedPidController, ReferenceRightOfRobotCommandsRightTurn)
   EXPECT_LT(output.heading_pid_output, 0.0);
 }
 
+// Rotation must excite the inner loop before lateral error has time to grow.
 TEST(CascadedPidController, SuddenRotationTriggersInnerLoopImmediately)
 {
   my_robot_controller::CascadedPidController controller;
@@ -53,6 +60,7 @@ TEST(CascadedPidController, SuddenRotationTriggersInnerLoopImmediately)
   EXPECT_LT(output.heading_pid_output, 0.0);
 }
 
+// The outer heading request must respect its configured saturation.
 TEST(CascadedPidController, AppliesOuterHeadingLimit)
 {
   my_robot_controller::CascadedPidConfig config;
@@ -69,6 +77,7 @@ TEST(CascadedPidController, AppliesOuterHeadingLimit)
   EXPECT_GT(output.heading_pid_output, 0.0);
 }
 
+// Non-finite or nonpositive safety configuration must fail immediately.
 TEST(CascadedPidController, RejectsInvalidConfiguration)
 {
   my_robot_controller::CascadedPidConfig config;

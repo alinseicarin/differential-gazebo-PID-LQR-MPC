@@ -8,6 +8,10 @@
 namespace
 {
 
+// These matrix-level checks protect the one mathematical model shared by LQR
+// and MPC; a sign or dimension error here would invalidate both methods.
+
+// Compare the continuous A/B coefficients with the hand-derived equations.
 TEST(LinearizedErrorModel, BuildsExpectedContinuousMatrices)
 {
   const auto model = my_robot_controller::LinearizedErrorModel::continuous(0.4, -0.2);
@@ -20,6 +24,7 @@ TEST(LinearizedErrorModel, BuildsExpectedContinuousMatrices)
   EXPECT_NEAR(model.input_matrix(1, 0), 0.0, 1.0e-12);
 }
 
+// At rest, exact zero-order-hold discretization has a simple closed form.
 TEST(LinearizedErrorModel, ZeroOrderHoldIsExactAtRest)
 {
   const double sample_period = 0.1;
@@ -33,6 +38,7 @@ TEST(LinearizedErrorModel, ZeroOrderHoldIsExactAtRest)
   EXPECT_NEAR(model.input_matrix(1, 1), 0.0, 1.0e-12);
 }
 
+// Forward speed must couple heading error into later lateral error.
 TEST(LinearizedErrorModel, ZeroOrderHoldCapturesLateralHeadingCoupling)
 {
   const double sample_period = 0.1;
@@ -47,6 +53,7 @@ TEST(LinearizedErrorModel, ZeroOrderHoldCapturesLateralHeadingCoupling)
     -0.5 * reference_speed * sample_period * sample_period, 1.0e-12);
 }
 
+// Reject nonphysical reference speed, timing, and non-finite inputs.
 TEST(LinearizedErrorModel, RejectsInvalidInputs)
 {
   EXPECT_THROW(

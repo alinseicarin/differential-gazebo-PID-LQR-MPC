@@ -8,6 +8,7 @@
 
 namespace
 {
+// Build a fresh straight timed path for every independent test.
 my_robot_controller::TrajectoryReferenceManager make_manager()
 {
   my_robot_controller::TrajectoryReferenceConfig config;
@@ -23,6 +24,7 @@ my_robot_controller::TrajectoryReferenceManager make_manager()
   return manager;
 }
 
+// The acceleration-constrained virtual robot starts and finishes at rest.
 TEST(TrajectoryReferenceManager, StartsAndEndsAtRest)
 {
   auto manager = make_manager();
@@ -36,6 +38,7 @@ TEST(TrajectoryReferenceManager, StartsAndEndsAtRest)
   EXPECT_GT(manager.duration(), 2.0);
 }
 
+// The prescribed clock advances regardless of actual robot progress.
 TEST(TrajectoryReferenceManager, ReferenceDependsOnTimeNotRobotProgress)
 {
   auto first_manager = make_manager();
@@ -51,6 +54,7 @@ TEST(TrajectoryReferenceManager, ReferenceDependsOnTimeNotRobotProgress)
   EXPECT_LT(robot_ahead.longitudinal_error, 0.0);
 }
 
+// Global pose difference must be rotated correctly into the robot body frame.
 TEST(TrajectoryReferenceManager, CalculatesBodyFramePoseError)
 {
   auto manager = make_manager();
@@ -64,6 +68,7 @@ TEST(TrajectoryReferenceManager, CalculatesBodyFramePoseError)
     std::hypot(reference.longitudinal_error, reference.lateral_error), 1.0e-12);
 }
 
+// Temporal completion cannot occur before the constructed duration.
 TEST(TrajectoryReferenceManager, MarksCompletionOnlyAfterReferenceDuration)
 {
   auto manager = make_manager();
@@ -73,6 +78,7 @@ TEST(TrajectoryReferenceManager, MarksCompletionOnlyAfterReferenceDuration)
   EXPECT_TRUE(manager.update(manager.duration(), 0.0, 0.0, 0.0).trajectory_complete);
 }
 
+// Invalid acceleration/profile parameters must fail before execution.
 TEST(TrajectoryReferenceManager, RejectsInvalidTimeProfileConfiguration)
 {
   my_robot_controller::TrajectoryReferenceConfig config;

@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 CONTROLLERS = ('pid', 'lqr', 'mpc')
-LABELS = {'pid': 'PID', 'lqr': 'TVLQR', 'mpc': 'MPC'}
+LABELS = {'pid': 'PID', 'lqr': 'LQR', 'mpc': 'MPC'}
 COLORS = {
     'pid': (213, 94, 0),
     'lqr': (0, 114, 178),
@@ -30,22 +30,26 @@ FONT_PATH = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
 FONT_BOLD_PATH = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
 
 
+# Load a consistent Pillow font object for every final figure.
 def font(size, bold=False):
     """Load a Unicode font available in the WSL and container images."""
     path = FONT_BOLD_PATH if bold else FONT_PATH
     return ImageFont.truetype(str(path), size)
 
 
+# Load one source CSV as header-keyed dictionaries.
 def read_csv(path):
     with path.open(newline='', encoding='utf-8') as stream:
         return list(csv.DictReader(stream))
 
 
+# Parse a finite plotting value, returning NaN for invalid cells.
 def numeric(row, key):
     value = row.get(key, '')
     return float(value) if value not in ('', 'nan') else math.nan
 
 
+# Hash each campaign file used to build a thesis figure.
 def sha256(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -54,6 +58,7 @@ def sha256(path):
     return digest.hexdigest()
 
 
+# Generate evenly spaced ticks and widen a degenerate numeric range.
 def tick_values(minimum, maximum, count=5):
     """Return readable, evenly spaced ticks including both plot limits."""
     if maximum <= minimum:
@@ -73,9 +78,12 @@ def tick_values(minimum, maximum, count=5):
     return values
 
 
+# Small Pillow-backed raster plotting surface that maps data coordinates to
+# pixels and exposes only the primitives required by the thesis.
 class Plot:
     """Small dependency-free plotting surface backed by Pillow."""
 
+    # Initialize canvas, margins, title, and axis-label text.
     def __init__(self, title, x_label, y_label, width=1800, height=1100):
         self.image = Image.new('RGB', (width, height), 'white')
         self.draw = ImageDraw.Draw(self.image)
@@ -90,6 +98,7 @@ class Plot:
         self.x_label = x_label
         self.y_label = y_label
 
+    # Define numeric bounds, optional equal aspect, grid, ticks, and labels.
     def axes(self, x_min, x_max, y_min, y_max, equal=False):
         if equal:
             plot_ratio = ((self.right - self.left) /
@@ -150,19 +159,23 @@ class Plot:
             label,
         )
 
+    # Map one data x coordinate to horizontal pixels.
     def x(self, value):
         fraction = (value - self.x_min) / (self.x_max - self.x_min)
         return self.left + fraction * (self.right - self.left)
 
+    # Map one data y coordinate to the inverted image pixel axis.
     def y(self, value):
         fraction = (value - self.y_min) / (self.y_max - self.y_min)
         return self.bottom - fraction * (self.bottom - self.top)
 
+    # Draw a continuous colored series through data-coordinate points.
     def polyline(self, points, color, width=5):
         pixels = [(self.x(x), self.y(y)) for x, y in points]
         if len(pixels) >= 2:
             self.draw.line(pixels, fill=color, width=width, joint='curve')
 
+    # Mark an event time, such as fault activation, with a dashed vertical line.
     def dashed_vertical(self, x_value, color, width=4, dash=18):
         x = self.x(x_value)
         y = self.top
@@ -173,6 +186,7 @@ class Plot:
             )
             y += 2 * dash
 
+    # Draw a compact vertical legend in unused plot space.
     def legend(self, entries):
         x = self.right - 305
         y = self.top + 28
@@ -193,10 +207,31 @@ class Plot:
                 fill=TEXT_COLOR, font=font(25),
             )
 
+    # Draw a single-row legend at a caller-selected vertical coordinate.
+    def horizontal_legend(self, entries, y):
+        """Draw one legend row outside the data rectangle."""
+        entry_width = 230
+        total_width = entry_width * len(entries)
+        x0 = (self.left + self.right - total_width) / 2
+        box = (x0 - 25, y - 25, x0 + total_width + 5, y + 27)
+        self.draw.rounded_rectangle(
+            box, radius=12, fill=(255, 255, 255),
+            outline=(150, 150, 150), width=2,
+        )
+        for index, (label, color) in enumerate(entries):
+            x = x0 + index * entry_width
+            self.draw.line((x, y, x + 58, y), fill=color, width=7)
+            self.draw.text(
+                (x + 75, y), label, anchor='lm',
+                fill=TEXT_COLOR, font=font(25),
+            )
+
+    # Encode the finished image according to the output filename extension.
     def save(self, path):
         self.image.save(path, dpi=(180, 180), optimize=True)
 
 
+# Resolve PID/LQR/MPC truth logs for one seed and scenario.
 def ground_truth_paths(root, seed, scenario):
     run_directories = list(root.glob(f'run_*_seed_{seed}'))
     if len(run_directories) != 1:
@@ -209,6 +244,7 @@ def ground_truth_paths(root, seed, scenario):
     }
 
 
+# Extract valid coordinate pairs, optionally cropped to a common horizon.
 def finite_pairs(rows, x_key, y_key, maximum_time=None):
     points = []
     for row in rows:
@@ -222,6 +258,7 @@ def finite_pairs(rows, x_key, y_key, maximum_time=None):
     return points
 
 
+# Add visual margin around a finite data interval.
 def padded_bounds(values, fraction=0.06):
     minimum, maximum = min(values), max(values)
     span = maximum - minimum
@@ -229,6 +266,7 @@ def padded_bounds(values, fraction=0.06):
     return minimum - padding, maximum + padding
 
 
+# Overlay the timed reference and actual figure-eight paths for all methods.
 def trajectory_figure(root, output, seed):
     paths = ground_truth_paths(root, seed, 'left_wheel_loss_persistent')
     datasets = {controller: read_csv(path) for controller, path in paths.items()}
@@ -245,7 +283,7 @@ def trajectory_figure(root, output, seed):
     x_min, x_max = padded_bounds(all_x)
     y_min, y_max = padded_bounds(all_y)
     plot = Plot(
-        f'Traiectorii cu pierdere permanentă a roții, seed {seed}',
+        f'Traiectorii cu pierdere permanentă a roții, realizarea {seed}',
         'x [m]', 'y [m]',
     )
     plot.axes(x_min, x_max, y_min, y_max, equal=True)
@@ -260,6 +298,7 @@ def trajectory_figure(root, output, seed):
     return list(paths.values())
 
 
+# Plot cross-track error versus time with unobstructed labels.
 def cte_time_figure(root, output, seed):
     paths = ground_truth_paths(root, seed, 'left_wheel_loss_persistent')
     datasets = {controller: read_csv(path) for controller, path in paths.items()}
@@ -272,7 +311,7 @@ def cte_time_figure(root, output, seed):
         maximum = max(maximum, max(value for _, value in points))
     y_max = math.ceil(maximum * 1.12 / 0.05) * 0.05
     plot = Plot(
-        f'Eroarea transversală sub defect permanent, seed {seed}',
+        f'Eroarea transversală sub defect permanent, realizarea {seed}',
         'Timpul experimentului [s]', '|CTE| [m]',
     )
     plot.axes(0.0, 30.0, 0.0, y_max)
@@ -288,6 +327,7 @@ def cte_time_figure(root, output, seed):
     return list(paths.values())
 
 
+# Draw completion counts with the legend positioned away from bars.
 def completion_figure(root, output):
     all_runs_path = root / 'all_runs.csv'
     rows = read_csv(all_runs_path)
@@ -309,6 +349,8 @@ def completion_figure(root, output):
         'Rata de finalizare în validarea independentă',
         'Condiția experimentală', 'Finalizări [%]',
     )
+    # Reserve a dedicated strip for the legend so it cannot cover a bar.
+    plot.top = 205
     plot.axes(-0.6, 1.6, 0.0, 100.0)
     group_centers = (0.0, 1.0)
     bar_width = 0.18
@@ -347,11 +389,14 @@ def completion_figure(root, output):
             (plot.x(group_centers[group_index]), plot.bottom + 22), label,
             anchor='ma', fill=TEXT_COLOR, font=font(24),
         )
-    plot.legend([(LABELS[c], COLORS[c]) for c in CONTROLLERS])
+    plot.horizontal_legend(
+        [(LABELS[c], COLORS[c]) for c in CONTROLLERS], y=135
+    )
     plot.save(output)
     return [all_runs_path]
 
 
+# Compare residual errors after permanent wheel-performance loss.
 def persistent_tail_figure(root, output):
     all_runs_path = root / 'all_runs.csv'
     rows = read_csv(all_runs_path)
@@ -366,9 +411,11 @@ def persistent_tail_figure(root, output):
     maximum = max(max(items) for items in values.values())
     y_max = math.ceil(maximum * 1.15 / 0.025) * 0.025
     plot = Plot(
-        'Eroarea transversală persistentă pentru fiecare seed',
+        'Eroarea transversală persistentă în cele zece realizări',
         'Regulatorul', 'Media |CTE| în coada activă [m]',
     )
+    # Leave two clean text rows below the axis: category, then group mean.
+    plot.bottom = 885
     plot.axes(-0.55, 2.55, 0.0, y_max)
     for controller_index, controller in enumerate(CONTROLLERS):
         items = values[controller]
@@ -387,13 +434,8 @@ def persistent_tail_figure(root, output):
              plot.x(controller_index + 0.22), plot.y(mean)),
             fill=(20, 20, 20), width=7,
         )
-        plot.draw.text(
-            (plot.x(controller_index), plot.y(mean) - 18),
-            f'{mean:.3f} m', anchor='mb',
-            fill=TEXT_COLOR, font=font(24, bold=True),
-        )
     plot.draw.rectangle(
-        (plot.left - 5, plot.bottom + 5, plot.right + 5, plot.bottom + 55),
+        (plot.left - 5, plot.bottom + 5, plot.right + 5, plot.bottom + 92),
         fill='white',
     )
     plot.draw.line(
@@ -405,10 +447,17 @@ def persistent_tail_figure(root, output):
             (plot.x(index), plot.bottom + 22), LABELS[controller],
             anchor='ma', fill=TEXT_COLOR, font=font(27),
         )
+        mean = sum(values[controller]) / len(values[controller])
+        mean_label = f'medie = {mean:.3f} m'.replace('.', ',')
+        plot.draw.text(
+            (plot.x(index), plot.bottom + 58), mean_label,
+            anchor='ma', fill=TEXT_COLOR, font=font(23, bold=True),
+        )
     plot.save(output)
     return [all_runs_path]
 
 
+# Record campaign path, representative seed, and input/output hashes.
 def write_manifest(output_directory, root, seed, inputs, outputs):
     generator = Path(__file__).resolve()
     lines = [
@@ -426,6 +475,7 @@ def write_manifest(output_directory, root, seed, inputs, outputs):
     )
 
 
+# Generate the selected high-resolution thesis figures and provenance manifest.
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('confirmatory_directory', type=Path)
@@ -468,4 +518,5 @@ def main():
 
 
 if __name__ == '__main__':
+    # Make plotting helpers importable without writing files automatically.
     main()

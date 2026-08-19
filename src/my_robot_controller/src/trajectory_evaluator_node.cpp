@@ -21,6 +21,7 @@
 namespace
 {
 
+// Helpers keep repeated quaternion validation/conversion out of callbacks.
 double yaw_from_odometry(const nav_msgs::msg::Odometry & message)
 {
   const auto & q = message.pose.pose.orientation;
@@ -38,6 +39,7 @@ bool finite_planar_pose(const nav_msgs::msg::Odometry & message)
 
 struct PlanarPoseSample
 {
+  // Timestamped Gazebo pose retained for alignment with delayed EKF messages.
   double stamp;
   double x;
   double y;
@@ -46,6 +48,7 @@ struct PlanarPoseSample
 
 struct WheelVelocitySample
 {
+  // Latest joint-state wheel rates used only when sufficiently fresh.
   double stamp{0.0};
   double left_angular_velocity{0.0};
   double right_angular_velocity{0.0};
@@ -58,6 +61,8 @@ public:
   TrajectoryEvaluatorNode()
   : Node("trajectory_evaluator_node")
   {
+    // Parameters reproduce the controller's reference construction and define
+    // evaluator-only wheel geometry/timestamp quality checks.
     declare_parameter<std::string>("csv_path", "");
     declare_parameter<std::string>("output_csv_path", "ground_truth_trajectory.csv");
     declare_parameter<int>("search_window", 20);
@@ -76,6 +81,7 @@ public:
     declare_parameter<double>("wheel_slip_speed_floor", 0.05);
     declare_parameter<double>("maximum_joint_state_age", 0.1);
 
+    // Validate paths and scalar dimensions before creating ROS subscriptions.
     const std::string path_file = get_parameter("csv_path").as_string();
     const std::string output_file = get_parameter("output_csv_path").as_string();
     const int search_window = get_parameter("search_window").as_int();
@@ -107,6 +113,8 @@ public:
     // callback after an experiment has already started.
     my_robot_controller::calculate_wheel_slip_metrics({}, slip_config_);
 
+    // Reconstruct the exact common time law independently. The evaluator reads
+    // no controller output and therefore cannot improve feedback performance.
     my_robot_controller::TrajectoryReferenceConfig reference_config;
     reference_config.path.search_window = static_cast<std::size_t>(search_window);
     reference_config.path.nominal_linear_velocity =
@@ -127,6 +135,8 @@ public:
     reference_manager_.configure(reference_config);
     reference_manager_.load_csv(path_file);
 
+    // The wide CSV deliberately places physical tracking, localization, body
+    // motion, and wheel-slip evidence on a common truth timestamp.
     output_csv_.open(output_file, std::ios::out | std::ios::trunc);
     if (!output_csv_.is_open()) {
       throw std::runtime_error("Could not create ground-truth evaluation CSV: " + output_file);
@@ -151,6 +161,8 @@ public:
       "yaw_velocity_discrepancy_ratio,sideslip_angle_rad,"
       "wheel_slip_sample_valid\n";
 
+    // Four asynchronous streams are synchronized analytically by timestamps;
+    // no ROS message filter is needed for this one-way evaluation node.
     filtered_subscriber_ = create_subscription<nav_msgs::msg::Odometry>(
       "odometry/filtered", 10,
       std::bind(&TrajectoryEvaluatorNode::filtered_callback, this, std::placeholders::_1));
@@ -183,6 +195,8 @@ public:
 private:
   void experiment_start_callback(const std_msgs::msg::Float64::SharedPtr message)
   {
+    // Use the controller-announced epoch rather than first truth arrival so all
+    // controllers and perturbations share an identical definition of t=0.
     if (!std::isfinite(message->data)) {
       RCLCPP_WARN(get_logger(), "Ignoring non-finite experiment start timestamp");
       return;
@@ -197,6 +211,8 @@ private:
 
   bool interpolate_truth_at(double stamp, PlanarPoseSample & result) const
   {
+    // Linear position interpolation and shortest-angle yaw interpolation align
+    // truth with the EKF timestamp before computing localization error.
     if (truth_history_.size() < 2u || stamp < truth_history_.front().stamp ||
       stamp > truth_history_.back().stamp)
     {
@@ -227,6 +243,8 @@ private:
 
   void filtered_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
+    // Cache the newest estimate. It is never republished or supplied to truth
+    // tracking calculations, preserving separation between control and scoring.
     if (!finite_planar_pose(*message)) {
       RCLCPP_WARN(get_logger(), "Ignoring non-finite filtered pose in evaluator");
       return;
@@ -240,6 +258,8 @@ private:
 
   void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr message)
   {
+    // JointState arrays are name-indexed because publishers may choose any
+    // order and may include caster or other joints.
     if (message->name.size() != message->velocity.size()) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
@@ -278,6 +298,8 @@ private:
 
   void truth_callback(const nav_msgs::msg::Odometry::SharedPtr message)
   {
+    // Gazebo truth drives evaluator sampling. This privileged stream is used
+    // only here and is never visible to PID, LQR, MPC, or the EKF.
     if (!finite_planar_pose(*message)) {
       RCLCPP_WARN(get_logger(), "Ignoring non-finite Gazebo truth pose");
       return;
@@ -339,6 +361,8 @@ private:
       }
     }
 
+    // Wheel-slip metrics are valid only when wheel and truth samples are close
+    // enough in simulation time; otherwise write NaN rather than misleading 0.
     double joint_state_age = missing;
     my_robot_controller::WheelSlipResult slip_result;
     bool wheel_slip_sample_valid = false;
@@ -359,10 +383,14 @@ private:
       }
     }
 
+    // Small formatting helper applies the same validity decision to every
+    // derived wheel metric written below.
     const auto slip_or_missing = [wheel_slip_sample_valid, missing](double value) {
         return wheel_slip_sample_valid ? value : missing;
       };
 
+    // One row per truth sample combines physical tracking, timestamp-aligned
+    // localization error, ground-truth twist, and optional wheel diagnostics.
     output_csv_ << elapsed_time << ',' << stamp << ',' <<
       truth_x << ',' << truth_y << ',' << truth_yaw << ',' <<
       reference.trajectory.position.x << ',' << reference.trajectory.position.y << ',' <<
@@ -408,20 +436,24 @@ private:
     }
   }
 
+  // Common reference reconstruction, output, and bounded truth history.
   my_robot_controller::TrajectoryReferenceManager reference_manager_;
   std::ofstream output_csv_;
   std::deque<PlanarPoseSample> truth_history_;
+  // Input-only ROS subscriptions; the evaluator intentionally has no publisher.
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr filtered_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr truth_subscriber_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr experiment_start_subscriber_;
 
+  // Wheel identification and freshness state.
   my_robot_controller::WheelSlipConfig slip_config_;
   WheelVelocitySample wheel_sample_;
   std::string left_wheel_joint_name_;
   std::string right_wheel_joint_name_;
   double maximum_joint_state_age_{0.1};
 
+  // Cached EKF/truth timing and lifecycle state.
   double previous_truth_stamp_{0.0};
   double experiment_start_stamp_{0.0};
   double filtered_stamp_{0.0};
@@ -439,6 +471,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  // Any invalid configuration terminates the node with a campaign-visible code.
   rclcpp::init(argc, argv);
   int result = 0;
   try {

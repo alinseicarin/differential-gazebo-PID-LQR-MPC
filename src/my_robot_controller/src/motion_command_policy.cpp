@@ -7,6 +7,9 @@
 namespace my_robot_controller
 {
 
+// This class is the final common interface for PID, LQR, and MPC. Every method
+// supplies the same feedforward/correction signals and receives the same
+// saturation and gross-error safety treatment before publishing a Twist.
 MotionCommandPolicy::MotionCommandPolicy(const MotionCommandPolicyConfig & config)
 {
   configure(config);
@@ -54,6 +57,8 @@ MotionCommand MotionCommandPolicy::calculate(
   }
 
   MotionCommand output;
+  // Keep the four unsaturated components for experiment logs. This makes it
+  // possible to distinguish reference motion from feedback effort afterwards.
   output.linear_feedforward_command = reference_linear_velocity;
   output.linear_feedback_command = linear_feedback_command;
   output.angular_feedforward_command = reference_angular_velocity;
@@ -67,6 +72,8 @@ MotionCommand MotionCommandPolicy::calculate(
     std::abs(heading_error) >= config_.translation_stop_heading_error;
 
   if (!output.translation_safety_stop) {
+    // Normal mode: u_command = u_reference + delta_u, followed by the common
+    // actuator limits. Reverse translation is intentionally forbidden.
     output.linear_command = std::clamp(
       output.linear_feedforward_command + output.linear_feedback_command,
       0.0, config_.maximum_linear_velocity);
@@ -75,6 +82,8 @@ MotionCommand MotionCommandPolicy::calculate(
       -config_.maximum_angular_velocity,
       config_.maximum_angular_velocity);
   } else {
+    // Recovery mode: cancel motion along the reference, but retain the bounded
+    // angular correction so the robot can turn back toward the trajectory.
     output.linear_feedforward_command = 0.0;
     output.angular_feedforward_command = 0.0;
     output.angular_command = std::clamp(

@@ -111,6 +111,8 @@ trap 'exit 143' TERM
 
 run_trial()
 {
+  # One trial owns a fresh simulation and controller process group, unique seed,
+  # CSV/log files, completion polling, settling check, and summary row.
   local profile="$1"
   local track_name="$2"
   local track_path="$3"
@@ -411,6 +413,8 @@ read -r -a profiles <<< "${PID_BENCHMARK_PROFILES:-cascade}"
 read -r -a tracks <<< "${PID_BENCHMARK_TRACKS:-straight curve corner circle figure_eight}"
 
 for profile in "${profiles[@]}"; do
+  # The default list contains only the thesis cascade. Legacy lookahead profiles
+  # are included only through an explicit selector for historical diagnostics.
   for track in "${tracks[@]}"; do
     for repetition in $(seq 1 "${REPETITIONS}"); do
       seed=$((BASE_SEED + repetition - 1))

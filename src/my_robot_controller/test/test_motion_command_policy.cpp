@@ -7,6 +7,10 @@
 
 namespace
 {
+// The shared post-controller policy is tested independently so PID, LQR, and
+// MPC inherit the same verified feedforward, bounds, and recovery behavior.
+
+// Normal operation adds feedback to its corresponding reference channel.
 TEST(MotionCommandPolicy, CombinesBothFeedforwardAndFeedbackChannels)
 {
   my_robot_controller::MotionCommandPolicy policy;
@@ -20,6 +24,7 @@ TEST(MotionCommandPolicy, CombinesBothFeedforwardAndFeedbackChannels)
   EXPECT_FALSE(output.translation_safety_stop);
 }
 
+// Linear feedback must genuinely alter the feedforward speed.
 TEST(MotionCommandPolicy, ControllerCanChangeLinearVelocity)
 {
   my_robot_controller::MotionCommandPolicy policy;
@@ -32,6 +37,7 @@ TEST(MotionCommandPolicy, ControllerCanChangeLinearVelocity)
   EXPECT_FALSE(behind.translation_safety_stop);
 }
 
+// Common bounds forbid reverse motion after longitudinal overshoot.
 TEST(MotionCommandPolicy, PreventsReverseCorrectionAfterOvershoot)
 {
   my_robot_controller::MotionCommandPolicy policy;
@@ -41,6 +47,7 @@ TEST(MotionCommandPolicy, PreventsReverseCorrectionAfterOvershoot)
   EXPECT_NEAR(output.linear_command, 0.0, 1.0e-12);
 }
 
+// Gross deviation stops translation but preserves bounded reorientation.
 TEST(MotionCommandPolicy, StopsOnlyTranslationAfterGrossDeviation)
 {
   my_robot_controller::MotionCommandPolicy policy;
@@ -57,6 +64,7 @@ TEST(MotionCommandPolicy, StopsOnlyTranslationAfterGrossDeviation)
   EXPECT_NEAR(heading_stop.angular_command, 0.3, 1.0e-12);
 }
 
+// Final commands must obey both common actuator limits.
 TEST(MotionCommandPolicy, AppliesSharedLinearAndAngularLimits)
 {
   my_robot_controller::MotionCommandPolicyConfig config;
@@ -71,6 +79,7 @@ TEST(MotionCommandPolicy, AppliesSharedLinearAndAngularLimits)
   EXPECT_NEAR(output.angular_command, 0.5, 1.0e-12);
 }
 
+// Configuration and runtime validity checks prevent unsafe propagation.
 TEST(MotionCommandPolicy, RejectsInvalidConfigurationAndInput)
 {
   my_robot_controller::MotionCommandPolicyConfig config;
