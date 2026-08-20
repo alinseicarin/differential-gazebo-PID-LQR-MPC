@@ -76,7 +76,9 @@ source install/setup.bash
 ```
 
 The analysis and final-figure scripts additionally use Python 3, PyYAML, and
-Pillow. They are installed by the Dockerfile as `python3-yaml` and `python3-pil`.
+Matplotlib. They are installed by the Dockerfile as `python3-yaml` and
+`python3-matplotlib`. Thesis figures are exported as vector PDF files and
+matching 300 dpi PNG previews.
 
 ## Running the simulation
 

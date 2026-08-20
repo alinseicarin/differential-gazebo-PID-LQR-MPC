@@ -19,8 +19,8 @@ RUN groupadd --gid $USER_GID $USERNAME \
 RUN apt-get update && apt-get install -y \
     sudo \
     python3-colcon-common-extensions \
+    python3-matplotlib \
     python3-pip \
-    python3-pil \
     python3-rosdep \
     python3-yaml \
     ros-humble-gazebo-ros-pkgs \

@@ -17,6 +17,22 @@ command_disturbance_actual_commands.csv
 __pycache__/
 *.py[cod]
 
+# Test, coverage, type-checker, and linter caches are regenerated locally.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Optional CMake tooling output generated from the local build tree.
+compile_commands.json
+
 # Local environment files may contain credentials or host-specific settings.
 # Keep a deliberately sanitized .env.example if one is introduced later.
 .env
@@ -25,8 +41,17 @@ __pycache__/
 
 # Editor and operating-system metadata unrelated to the robotics experiment.
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
 *:Zone.Identifier
+
+# Local coding-agent state is host/session-specific and is not part of the
+# reproducible ROS 2 workspace.
+.agents/
+.codex/
 
 # Thesis drafts, writing guidelines, course papers, and other local reference
 # material are kept outside version control. They may contain copyrighted or
