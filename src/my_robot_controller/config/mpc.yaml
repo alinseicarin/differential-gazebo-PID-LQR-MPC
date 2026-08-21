@@ -1,0 +1,48 @@
+# Constrained linear time-varying MPC for the common timed trajectory.
+#
+# The commissioned configuration deliberately reuses the TVLQR Q, R, and
+# terminal multiplier. This isolates the effect of finite-horizon online
+# prediction and explicit actuator constraints in the final comparison.
+mpc_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # Commissioning selected 45 samples: 1.5 s of prediction at 30 Hz.
+    mpc_prediction_horizon_steps: 45
+    mpc_longitudinal_error_weight: 100.0
+    mpc_lateral_error_weight: 400.0
+    mpc_heading_error_weight: 100.0
+    mpc_linear_correction_weight: 125.0
+    mpc_angular_correction_weight: 15.625
+    mpc_terminal_weight_multiplier: 10.0
+
+    # OSQP stopping rules. The 20 ms limit leaves margin inside the 33.3 ms
+    # control period; an unsolved QP causes a safe zero command.
+    mpc_maximum_solver_iterations: 4000
+    mpc_absolute_solver_tolerance: 0.00001
+    mpc_relative_solver_tolerance: 0.00001
+    mpc_solver_time_limit: 0.02
+    mpc_polish_solution: false
+
+    # Identical timed-reference policy to PID and TVLQR.
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.0
+    maximum_reference_curvature: 5.0
+    trajectory_spatial_step: 0.01
+    maximum_reference_linear_acceleration: 0.5
+    maximum_reference_linear_deceleration: 0.1
+    maximum_reference_angular_velocity: 1.5
+
+    # Identical timing, completion, actuator limits, and emergency guard.
+    nominal_control_frequency: 30.0
+    max_control_dt: 0.2
+    goal_tolerance: 0.08
+    goal_heading_tolerance: 0.15
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+    translation_stop_lateral_error: 0.75
+    translation_stop_heading_error: 1.2
+    odom_timeout: 2.0
+    startup_settling_time: 1.0

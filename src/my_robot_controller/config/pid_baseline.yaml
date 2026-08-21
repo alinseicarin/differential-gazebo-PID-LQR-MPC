@@ -1,0 +1,32 @@
+# Reference tuning used as the control-group configuration in comparisons.
+# These gains reproduce the corrected controller's original baseline behavior.
+pid_node:
+  ros__parameters:
+    use_sim_time: true
+    controller_mode: lookahead
+
+    linear_kp: 1.0
+    linear_ki: 0.1
+    linear_kd: 0.2
+    linear_integral_limit: 1.0
+
+    angular_kp: 1.5
+    angular_ki: 0.0
+    angular_kd: 0.3
+    angular_integral_limit: 1.0
+
+    # These path, timing, and actuator settings are identical in every profile
+    # so measured differences are attributable to PID gains rather than limits.
+    lookahead_points: 5
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
+    nominal_control_frequency: 30.0
+    max_control_dt: 0.2
+    goal_tolerance: 0.08
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+    odom_timeout: 2.0
+    startup_settling_time: 1.0

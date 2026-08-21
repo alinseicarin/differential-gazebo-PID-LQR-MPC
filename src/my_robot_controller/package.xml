@@ -1,22 +1,40 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
+  <!-- Identity shown by tools such as `ros2 pkg xml` and package indexes. -->
   <name>my_robot_controller</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="alinsei@yahoo.com">ubuntu</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Timed PID, TVLQR, and LTV-MPC trajectory tracking and benchmarking.</description>
+  <maintainer email="alin.seicarin@gmail.com">Alin Seicarin</maintainer>
+  <!-- The project is distributed under the permissive Apache 2.0 license. -->
+  <license>Apache-2.0</license>
 
+  <!-- ament_cmake drives configuration, compilation, installation, and export. -->
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- C++ node dependencies: ROS client API, Twist commands, and odometry. -->
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <!-- Matrix algebra and matrix exponential for the shared LTV model. -->
+  <build_depend>eigen3_cmake_module</build_depend>
+  <depend>eigen</depend>
+  <!-- Convex quadratic-program solver used by the constrained LTV-MPC. -->
+  <depend>osqp_vendor</depend>
 
+  <!-- Python launch dependencies are needed at runtime, not during C++ build. -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Automatically discovered style and metadata checks for `colcon test`. -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
+    <!-- Declare this as a conventional CMake-based ROS 2 package. -->
     <build_type>ament_cmake</build_type>
   </export>
 </package>

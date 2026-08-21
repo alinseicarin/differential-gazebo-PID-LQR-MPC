@@ -1,52 +1,130 @@
+"""Launch the robot model, Gazebo simulation, EKF, and RViz visualization."""
+
 import os
-from launch.actions import IncludeLaunchDescription
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    SetEnvironmentVariable,
+)
+from launch.substitutions import LaunchConfiguration
+
 
 def generate_launch_description():
-    # Find your package and the URDF file
+    """Construct the complete simulation and state-estimation launch graph."""
+    # Desktop containers can inherit XDG_RUNTIME_DIR=/run/user/<uid> even when
+    # that directory was not mounted from the host. Qt then tries to create it
+    # below the root-owned /run/user directory: RViz may continue with a
+    # warning, while Gazebo Classic's gzclient exits before opening a window.
+    # Give both GUI processes a private, writable runtime directory in /tmp.
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR', '')
+    if not (
+        runtime_dir
+        and os.path.isdir(runtime_dir)
+        and os.access(runtime_dir, os.W_OK)
+    ):
+        runtime_dir = os.path.join('/tmp', f'robotics-runtime-{os.getuid()}')
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+    runtime_dir_env = SetEnvironmentVariable(
+        name='XDG_RUNTIME_DIR',
+        value=runtime_dir,
+    )
+
+    # Resolve installed assets through the ament index. This works for both
+    # normal and --symlink-install builds without hard-coded workspace paths.
     pkg_path = get_package_share_directory('my_robot_description')
     urdf_file = os.path.join(pkg_path, 'urdf', 'my_robot.urdf')
 
-    # Read the URDF file
+    # robot_state_publisher and Gazebo's entity spawner both consume the same
+    # URDF text from the transient-local /robot_description topic.
     with open(urdf_file, 'r') as infp:
         robot_desc = infp.read()
 
-    # Node 1: robot_state_publisher (Broadcasts the URDF math to the system)
+    # Select one of the installed SDF environments from the command line, e.g.
+    # `world:=rough.world`. The flat empty world is the nominal baseline.
+    world_arg = DeclareLaunchArgument(
+        'world',
+        default_value='empty.world',  # Your flat testing track
+        description='The Gazebo world file to load (empty.world, incline.world, rough.world)'
+    )
+
+    # Automated experiments normally disable GUI rendering so Gazebo can keep
+    # up with simulation time and produce repeatable wall-clock behavior.
+    gui_arg = DeclareLaunchArgument(
+        'gui',
+        default_value='true',
+        description='Start Gazebo and RViz GUIs; false runs physics headlessly'
+    )
+
+    # A fixed default seed makes simulated sensor noise reproducible. Formal
+    # repeated trials can override it to quantify sensitivity to noise.
+    seed_arg = DeclareLaunchArgument(
+        'seed',
+        default_value='42',
+        description='Gazebo random seed used by physics and sensor noise'
+    )
+
+    # LaunchConfiguration is resolved at launch time after arguments are parsed.
+    world_name = LaunchConfiguration('world')
+    seed = LaunchConfiguration('seed')
+
+    # A substitution list concatenates the directory and selected world name.
+    world_path = [os.path.join(pkg_path, 'worlds', ''), world_name]
+    gazebo_config_path = os.path.join(pkg_path, 'config', 'gazebo.yaml')
+
+    # Publish fixed URDF joints and wheel transforms derived from /joint_states.
+    # Simulation time keeps TF timestamps aligned with Gazebo and the EKF.
     rsp_node = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         output='screen',
-        parameters=[{'robot_description': robot_desc}]
+        parameters=[
+            {'robot_description': robot_desc},
+            {'use_sim_time': True},
+        ]
     )
 
-    # Node 2: joint_state_publisher_gui (Gives you a popup window with sliders to spin the wheels!)
-    jsp_gui_node = Node(
-        package='joint_state_publisher_gui',
-        executable='joint_state_publisher_gui',
-        output='screen'
-    )
-
-    # Find the RViz config file
+    # RViz is visualization only; it does not feed commands or simulation state.
     rviz_config_file = os.path.join(pkg_path, 'rviz', 'display.rviz')
 
-    # Node 3: RViz2 (The visualizer)
+    # Load a repeatable camera/display layout with odom as the fixed frame.
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         output='screen',
-        arguments=['-d', rviz_config_file] # <--- This tells it to load your save file!
+        arguments=['-d', rviz_config_file],
+        parameters=[{'use_sim_time': True}],
+        condition=IfCondition(LaunchConfiguration('gui'))
     )
 
-    # Node 4: Boot up the Gazebo Physics World
-    gazebo_server= IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([os.path.join(
-            get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py')])
+    # Interactive process: `gazebo` starts both gzserver and gzclient.
+    gazebo_gui = ExecuteProcess(
+        cmd=['gazebo', '--verbose', world_path,
+             '-s', 'libgazebo_ros_init.so',
+             '-s', 'libgazebo_ros_factory.so',
+             '--seed', seed,
+             '--ros-args', '--params-file', gazebo_config_path, '--'],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('gui'))
     )
 
-    # Node 5: Drop your robot URDF into the world
+    # Headless process: physics and ROS plugins run without rendering a client.
+    gazebo_headless = ExecuteProcess(
+        cmd=['gzserver', '--verbose', world_path,
+             '-s', 'libgazebo_ros_init.so',
+             '-s', 'libgazebo_ros_factory.so',
+             '--seed', seed,
+             '--ros-args', '--params-file', gazebo_config_path, '--'],
+        output='screen',
+        condition=UnlessCondition(LaunchConfiguration('gui'))
+    )
+
+    # Insert one robot model from /robot_description. spawn_entity.py waits for
+    # Gazebo's service, so explicit timer-based launch sequencing is unnecessary.
     spawn_robot_node = Node(
         package='gazebo_ros',
         executable='spawn_entity.py',
@@ -54,24 +132,31 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Find the config file
+    # robot_localization fuses wheel odometry and IMU measurements at 30 Hz.
     ekf_config_path = os.path.join(pkg_path, 'config', 'ekf.yaml')
 
-    # Node 6: The Extended Kalman Filter
+    # Its output /odometry/filtered drives the PID controller, and it is the sole
+    # publisher of the dynamic odom -> base_footprint transform.
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
         name='ekf_filter_node',
         output='screen',
-        # Add the dictionary {'use_sim_time': True} to this list!
         parameters=[ekf_config_path, {'use_sim_time': True}]
     )
 
+    # Launch actions start concurrently. Components with service/topic
+    # dependencies wait internally for their required Gazebo/ROS interfaces.
     return LaunchDescription([
+        runtime_dir_env,
+        world_arg,
+        gui_arg,
+        seed_arg,
         rsp_node,
-        jsp_gui_node,
+        # RViz is unnecessary in headless benchmark mode.
         rviz_node,
-        gazebo_server,
+        gazebo_gui,
+        gazebo_headless,
         spawn_robot_node,
         ekf_node
     ])

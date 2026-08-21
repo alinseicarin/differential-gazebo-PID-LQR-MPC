@@ -1,0 +1,31 @@
+# More responsive tuning intended to reduce completion time on nominal terrain.
+# Higher proportional gains command more speed and steering for the same error;
+# lower derivative gains reduce damping, so overshoot/error must be monitored.
+pid_node:
+  ros__parameters:
+    use_sim_time: true
+    controller_mode: lookahead
+
+    linear_kp: 1.45
+    linear_ki: 0.12
+    linear_kd: 0.12
+    linear_integral_limit: 1.0
+
+    angular_kp: 1.8
+    angular_ki: 0.0
+    angular_kd: 0.25
+    angular_integral_limit: 1.0
+
+    lookahead_points: 5
+    search_window: 20
+    reference_linear_velocity: 0.4
+    curvature_speed_gain: 0.5
+    endpoint_slowdown_distance: 0.5
+    maximum_reference_curvature: 5.0
+    nominal_control_frequency: 30.0
+    max_control_dt: 0.2
+    goal_tolerance: 0.08
+    max_linear_velocity: 1.0
+    max_angular_velocity: 1.5
+    odom_timeout: 2.0
+    startup_settling_time: 1.0

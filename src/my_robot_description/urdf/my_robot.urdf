@@ -1,6 +1,14 @@
 <?xml version="1.0"?>
+<!-- Differential-drive research robot used for PID/LQR/MPC comparisons.
+
+     URDF elements define the kinematic tree, visual geometry, collision
+     geometry, mass, and inertia. Gazebo extension elements near the end attach
+     simulated sensors and drive plugins. Distances use metres, masses use
+     kilograms, and roll/pitch/yaw angles use radians. -->
 <robot name="my_diff_drive_robot">
 
+    <!-- Named materials allow visual elements to reuse consistent colours.
+         Colours do not influence Gazebo contact or dynamics. -->
     <material name="blue">
         <color rgba="0 0 0.8 1"/>
     </material>
@@ -11,14 +19,18 @@
         <color rgba="1 1 1 1"/>
     </material>
 
+    <!-- base_footprint is the planar control/localization frame on the ground.
+         It has no physical geometry or inertia of its own. -->
     <link name="base_footprint"/>
 
+    <!-- Lift the chassis centre 0.1 m so the 0.1 m-radius wheels touch z=0. -->
     <joint name="base_joint" type="fixed">
         <parent link="base_footprint"/>
         <child link="chassis"/>
         <origin xyz="0 0 0.1" rpy="0 0 0"/>
     </joint>
 
+    <!-- Lightweight frame carrying the simulated IMU at the chassis centre. -->
     <link name="imu_link">
         <inertial>
             <mass value="0.01"/>
@@ -26,39 +38,58 @@
         </inertial>
     </link>
 
+    <!-- Fixed mounting means IMU measurements share the chassis orientation. -->
     <joint name="imu_joint" type="fixed">
         <parent link="chassis"/>
         <child link="imu_link"/>
         <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
 
+    <!-- Main rigid body. Visual and collision boxes deliberately match so what
+         appears in Gazebo corresponds to the contact geometry. -->
     <link name="chassis">
-    <visual>
-      <geometry>
-        <box size="0.3 0.2 0.1"/>
-      </geometry>
-      <material name="blue">
-        <color rgba="0 0 1 1"/>
-      </material>
-    </visual>
+        <visual>
+            <geometry>
+                <box size="0.3 0.2 0.1"/>
+            </geometry>
+        <material name="blue">
+            <color rgba="0 0 1 1"/>
+        </material>
+        </visual>
 
-    <collision>
-      <geometry>
-        <box size="0.3 0.2 0.1"/>
-      </geometry>
-    </collision>
+        <collision>
+            <geometry>
+                <box size="0.3 0.2 0.1"/>
+            </geometry>
+        </collision>
 
-    <inertial>
-      <mass value="1.0"/>
-      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
-    </inertial>
-  </link>
+        <!-- The centre of mass is shifted 5 cm forward to avoid an unrealistically
+             perfect symmetric body and to make disturbance tests meaningful. -->
+        <inertial>
+            <origin xyz="0.05 0 0" rpy="0 0 0"/>
+            <mass value="3.0"/>
+            <!-- Rectangular-box inertia about the 3 kg chassis centre of mass. -->
+            <inertia ixx="0.0125" ixy="0.0" ixz="0.0" iyy="0.025" iyz="0.0" izz="0.0325"/>
+        </inertial>
+    </link>
 
+    <!-- Left drive wheel. The cylinder is rotated so its original z-axis lies
+         along the robot's lateral y-axis; the joint then spins continuously. -->
     <joint name="left_wheel_joint" type="continuous">
+        <!-- Match the force limit imposed by gazebo_ros_diff_drive below. The
+             13 rad/s joint limit exceeds the largest wheel speed admitted by
+             the common body-command box: (1 + 1.5*0.35/2)/0.1 = 12.625 rad/s.
+             It therefore avoids an undeclared wheel-level saturation. -->
+        <limit effort="20.0" velocity="13.0"/>
+        <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="left_wheel"/>
-        <origin xyz="0 0.175 0" rpy="-1.5708 0 0"/> <axis xyz="0 0 1"/> </joint>
+        <origin xyz="0 0.175 0" rpy="-1.5708 0 0"/> 
+        <axis xyz="0 0 1"/>
+    </joint>
 
+    <!-- Radius 0.1 m and width 0.05 m. Visual, collision, and plugin diameter
+         must remain consistent for correct odometry and vehicle dynamics. -->
     <link name="left_wheel">
         <visual>
             <geometry>
@@ -73,17 +104,23 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <!-- Solid-cylinder inertia; the local z-axis is the wheel axle. -->
+            <inertia ixx="0.000270833" ixy="0.0" ixz="0.0" iyy="0.000270833" iyz="0.0" izz="0.0005"/>
         </inertial>
     </link>
 
+    <!-- Mirrored right joint. The reversed axis keeps positive wheel rotation
+         consistent with forward robot motion after the opposite cylinder roll. -->
     <joint name="right_wheel_joint" type="continuous">
+        <limit effort="20.0" velocity="13.0"/>
+        <dynamics damping="0.1" friction="0.1"/>
         <parent link="chassis"/>
         <child link="right_wheel"/>
         <origin xyz="0 -0.175 0" rpy="1.5708 0 0"/> 
         <axis xyz="0 0 -1"/>
     </joint>
 
+    <!-- Right wheel geometry and inertia match the left wheel. -->
     <link name="right_wheel">
         <visual>
             <geometry>
@@ -98,10 +135,12 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <inertia ixx="0.000270833" ixy="0.0" ixz="0.0" iyy="0.000270833" iyz="0.0" izz="0.0005"/>
         </inertial>
     </link>
 
+    <!-- A low-friction spherical support prevents the chassis from tipping. It
+         is fixed because its rotation is irrelevant to the planar drive model. -->
     <joint name="caster_wheel_joint" type="fixed">
         <parent link="chassis"/>
         <child link="caster_wheel"/>
@@ -122,9 +161,12 @@
         </collision>
         <inertial>
             <mass value="0.1"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <!-- Solid-sphere inertia: 2*m*r^2/5. -->
+            <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
         </inertial>
     </link>
+    <!-- Wheel/ground friction used by Gazebo's contact solver. Both directions
+         use the same coefficient for a simple, repeatable nominal model. -->
     <gazebo reference="left_wheel">
         <mu1>0.5</mu1>
         <mu2>0.5</mu2>
@@ -135,6 +177,8 @@
         <mu2>0.5</mu2>
     </gazebo>
 
+    <!-- Simulated IMU publishes sensor_msgs/Imu on /demo/imu. Gaussian noise
+         makes EKF fusion and controller robustness closer to a real system. -->
     <gazebo reference="imu_link">
         <sensor name="imu_sensor" type="imu">
             <plugin filename="libgazebo_ros_imu_sensor.so" name="imu_plugin">
@@ -145,14 +189,19 @@
                 <initial_orientation_as_reference>false</initial_orientation_as_reference>
             </plugin>
       
+            <!-- Sample faster than the 30 Hz EKF so each fusion update has a
+                 recent IMU measurement. Visualization shows its sensor frame. -->
             <always_on>true</always_on>
             <update_rate>100</update_rate> <visualize>true</visualize>
       
+            <!-- Independent zero-mean Gaussian noise is applied to each axis.
+                 The 0.002 rad/s gyro deviation keeps the IMU informative without
+                 making encoder yaw-rate fusion numerically irrelevant. -->
             <imu>
                 <angular_velocity>
-                    <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></x>
-                    <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></y>
-                    <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></z>
+                    <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+                    <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+                    <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
                 </angular_velocity>
                 <linear_acceleration>
                     <x><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></x>
@@ -163,26 +212,80 @@
         </sensor>
     </gazebo>
 
+    <!-- Differential-drive actuator and wheel-encoder odometry model.
+
+         Input:  /cmd_vel (geometry_msgs/Twist)
+         Output: /odom (nav_msgs/Odometry)
+
+         It publishes odometry data but not odom TF; the EKF owns the filtered
+         odom -> base_footprint transform to avoid competing TF publishers. -->
     <gazebo>
         <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
+            <update_rate>30.0</update_rate>
             <left_joint>left_wheel_joint</left_joint>
             <right_joint>right_wheel_joint</right_joint>
       
-            <wheel_separation>0.2</wheel_separation> 
-            <wheel_diameter>0.1</wheel_diameter>
+            <!-- Match the wheel joint centers at y=+/-0.175 m and radius 0.1 m. -->
+            <wheel_separation>0.35</wheel_separation>
+            <wheel_diameter>0.2</wheel_diameter>
 
+            <!-- Source 0 integrates the simulated wheel-joint velocities.
+                 Unlike the WORLD default, it cannot read the exact Gazebo body
+                 pose and therefore accumulates error when wheels slip. -->
+            <odometry_source>0</odometry_source>
+
+            <!-- Torque and acceleration limits model actuator constraints and
+                 influence transient response during benchmark trials. -->
             <max_wheel_torque>20</max_wheel_torque>
             <max_wheel_acceleration>1.0</max_wheel_acceleration>
 
             <publish_odom>true</publish_odom>
-            <publish_odom_tf>true</publish_odom_tf>
-            <publish_wheel_tf>true</publish_wheel_tf>
+            <!-- The EKF is the sole publisher of odom -> base_footprint. -->
+            <publish_odom_tf>false</publish_odom_tf>
+            <!-- robot_state_publisher owns the wheel transforms. -->
+            <publish_wheel_tf>false</publish_wheel_tf>
             <odometry_frame>odom</odometry_frame>
             <robot_base_frame>base_footprint</robot_base_frame>
 
-            <covariance_x>0.001</covariance_x> <covariance_y>0.001</covariance_y> <covariance_yaw>0.01</covariance_yaw> 
+            <!-- Covariances describe encoder-derived pose and twist uncertainty
+                 to downstream estimators; they do not themselves add noise. -->
+            <covariance_x>0.001</covariance_x> <covariance_y>0.001</covariance_y> <covariance_yaw>0.0001</covariance_yaw>
       
         </plugin>
+
+        <!-- Evaluation-only ground truth. This plugin reads the chassis pose
+             and velocity directly from Gazebo and publishes /ground_truth/odom.
+             Controllers never subscribe to this topic; it is reserved for
+             measuring true tracking error and EKF localization error. -->
+        <plugin name="ground_truth" filename="libgazebo_ros_p3d.so">
+            <ros>
+                <remapping>odom:=ground_truth/odom</remapping>
+            </ros>
+            <!-- Gazebo lumps the fixed chassis joint into the canonical base
+                 link, so base_footprint is the body visible to this plugin. -->
+            <body_name>base_footprint</body_name>
+            <frame_name>world</frame_name>
+            <update_rate>30.0</update_rate>
+            <gaussian_noise>0.0</gaussian_noise>
+        </plugin>
+    </gazebo>
+
+    <!-- Export simulated wheel angles on /joint_states. robot_state_publisher
+         uses these values to publish the two rotating wheel transforms. -->
+    <gazebo>
+        <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+            <update_rate>30.0</update_rate>
+            <joint_name>left_wheel_joint</joint_name>
+            <joint_name>right_wheel_joint</joint_name>
+        </plugin>
+    </gazebo>
+    
+    <!-- Zero caster friction approximates free rolling/sliding support and
+         prevents the fixed sphere from resisting differential-drive turns. -->
+    <gazebo reference="caster_wheel">
+        <mu1>0.0</mu1>
+        <mu2>0.0</mu2>
+        <material>Gazebo/FlatBlack</material>
     </gazebo>
   
 </robot>

@@ -1,0 +1,7 @@
+gazebo:
+  ros__parameters:
+    # Gazebo's default 10 Hz /clock throttles every simulation-time timer,
+    # including a nominally 30 Hz EKF. A 100 Hz clock lets the 30 Hz estimator
+    # and controller run at their configured rates without excessive traffic.
+    publish_rate: 100.0
+    enable_performance_metrics: true
